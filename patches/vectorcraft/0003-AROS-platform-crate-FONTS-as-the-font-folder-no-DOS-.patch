@@ -1,0 +1,390 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 16:33:23 +0100
+Subject: [PATCH] AROS: platform crate, FONTS: as the font folder, no DOS
+ volume requesters
+
+vectorcraft-aros-platform holds the AROS calls (Workbench start data, ToolTypes, program drawer, DOS name resolution, error requester) behind a safe API, with host fallbacks.
+
+The font folder list for systems other than macOS and Windows is Linux's; in the -nix path mode each folder names a volume (usr, run, ...) and DOS asked for each one, so vectorcraft-cli info never finished. AROS gets FONTS:. The CLI also sets pr_WindowPtr to -1 at start so that any other probe of a missing volume fails instead of opening a requester.
+---
+ Cargo.lock                        |   5 +
+ apps/vectorcraft-cli/Cargo.toml   |   3 +
+ apps/vectorcraft-cli/src/main.rs  |   3 +
+ crates/aros-platform/Cargo.toml   |   9 ++
+ crates/aros-platform/build.rs     |  31 ++++++
+ crates/aros-platform/c/platform.c |  78 +++++++++++++++
+ crates/aros-platform/src/lib.rs   | 161 ++++++++++++++++++++++++++++++
+ crates/text/src/fontdb/dirs.rs    |   4 +
+ 8 files changed, 294 insertions(+)
+ create mode 100644 crates/aros-platform/Cargo.toml
+ create mode 100644 crates/aros-platform/build.rs
+ create mode 100644 crates/aros-platform/c/platform.c
+ create mode 100644 crates/aros-platform/src/lib.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index d329c26a7dde87f9dcb2a95d31ea84ab5c0517ea..751d34df6601833af437eac5f4464e37bec4a883 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -6086,6 +6086,10 @@ dependencies = [
+  "ruzstd",
+ ]
+ 
++[[package]]
++name = "vectorcraft-aros-platform"
++version = "0.17.0"
++
+ [[package]]
+ name = "vectorcraft-brush"
+ version = "0.17.0"
+@@ -6122,6 +6126,7 @@ dependencies = [
+  "objc2-core-foundation",
+  "objc2-core-text",
+  "serde_json",
++ "vectorcraft-aros-platform",
+  "vectorcraft-color",
+  "vectorcraft-doc",
+  "vectorcraft-engine",
+diff --git a/apps/vectorcraft-cli/Cargo.toml b/apps/vectorcraft-cli/Cargo.toml
+index 82f0b100d06e38108fc6f0f233fc49ef00eb5fc5..2583870d668223e2edb115191fa8f760ebe3f50f 100644
+--- a/apps/vectorcraft-cli/Cargo.toml
++++ b/apps/vectorcraft-cli/Cargo.toml
+@@ -47,3 +47,6 @@ objc2-core-text = { version = "0.3", default-features = false, features = ["std"
+ [dev-dependencies]
+ vectorcraft-testkit = { workspace = true }
+ serde_json = { workspace = true }
++
++[target.'cfg(target_os = "aros")'.dependencies]
++vectorcraft-aros-platform = { path = "../../crates/aros-platform" }
+diff --git a/apps/vectorcraft-cli/src/main.rs b/apps/vectorcraft-cli/src/main.rs
+index 6ec320ea26f2fda121cae8500417bc2611f1b1d8..f2af90a688a0981116ee4caca832c2937aa71523 100644
+--- a/apps/vectorcraft-cli/src/main.rs
++++ b/apps/vectorcraft-cli/src/main.rs
+@@ -161,6 +161,9 @@ fn help() -> Result<(), String> {
+ }
+ 
+ fn main() -> ExitCode {
++    // AROS: a path to a volume that does not exist fails instead of asking for the volume.
++    #[cfg(target_os = "aros")]
++    vectorcraft_aros_platform::quiet_dos();
+     // Before any font lookup: the fonts font services load (#579).
+     #[cfg(all(windows, not(target_vendor = "win7")))]
+     system_fonts::install();
+diff --git a/crates/aros-platform/Cargo.toml b/crates/aros-platform/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..1f59a2b8901109a19696c4158d749063ae0db42d
+--- /dev/null
++++ b/crates/aros-platform/Cargo.toml
+@@ -0,0 +1,9 @@
++[package]
++name = "vectorcraft-aros-platform"
++version.workspace = true
++edition.workspace = true
++license.workspace = true
++publish = false
++
++[lints]
++workspace = true
+diff --git a/crates/aros-platform/build.rs b/crates/aros-platform/build.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..852be3467ef4bcf1d3c321acfd922cac33f67d32
+--- /dev/null
++++ b/crates/aros-platform/build.rs
+@@ -0,0 +1,31 @@
++use std::{env, path::PathBuf, process::Command};
++fn main() {
++    println!("cargo:rerun-if-changed=c/platform.c");
++    for key in ["AROS_GCC", "AROS_AR", "AROS_SDK"] {
++        println!("cargo:rerun-if-env-changed={key}");
++    }
++    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("aros") {
++        return;
++    }
++    let out = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
++    let cc = env::var_os("AROS_GCC").expect("set AROS_GCC");
++    let sdk = env::var("AROS_SDK").expect("set AROS_SDK");
++    let obj = out.join("platform.o");
++    assert!(
++        Command::new(cc)
++            .args([format!("--sysroot={sdk}"), "-O2".into(), "-Wall".into(), "-Werror".into(), "-c".into(), "c/platform.c".into(), "-o".into()])
++            .arg(&obj)
++            .status()
++            .expect("run AROS compiler")
++            .success()
++    );
++    let archive = out.join("libvectorcraft_platform.a");
++    let _ = std::fs::remove_file(&archive);
++    assert!(
++        Command::new(env::var_os("AROS_AR").expect("set AROS_AR")).arg("rcs").arg(archive).arg(obj).status().expect("run AROS archiver").success()
++    );
++    println!("cargo:rustc-link-search=native={}", out.display());
++    println!("cargo:rustc-link-lib=static=vectorcraft_platform");
++    println!("cargo:rustc-link-lib=icon");
++    println!("cargo:rustc-link-lib=intuition");
++}
+diff --git a/crates/aros-platform/c/platform.c b/crates/aros-platform/c/platform.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..141e602aaba12beee5046d026f783e3fa738dcd8
+--- /dev/null
++++ b/crates/aros-platform/c/platform.c
+@@ -0,0 +1,78 @@
++/* Workbench owns WBenchMsg and its argument locks until CRT startup returns.
++ * We borrow them on the main task only; every returned string is copied into
++ * caller storage. Never ReplyMsg, UnLock a borrowed lock, or retain DiskObject data. */
++#include <aros/startup.h>
++#include <workbench/startup.h>
++#include <workbench/workbench.h>
++#include <dos/dosextens.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++#include <proto/icon.h>
++#include <proto/intuition.h>
++#include <intuition/intuition.h>
++#include <string.h>
++
++int vc_workbench(void) { return WBenchMsg != NULL; }
++
++/* Unix-style probes (font folders, settings folders) name volumes that do not exist on AROS;
++ * DOS would ask the user to insert each one. The program and the threads it starts (which
++ * inherit pr_WindowPtr) get an error instead. */
++void vc_quiet_dos(void) {
++    struct Process *me = (struct Process *)FindTask(NULL);
++    me->pr_WindowPtr = (APTR)-1;
++}
++
++static int wb_path(int index, char *out, int cap) {
++    if (!WBenchMsg || index < 0 || index >= WBenchMsg->sm_NumArgs) return 0;
++    struct WBArg *arg = &WBenchMsg->sm_ArgList[index];
++    if (!NameFromLock(arg->wa_Lock, (STRPTR)out, cap)) return -1;
++    return AddPart((STRPTR)out, (CONST_STRPTR)arg->wa_Name, cap) ? 1 : -1;
++}
++int vc_wb_file(int index, char *out, int cap) { return wb_path(index, out, cap); }
++int vc_tooltype(const char *key, char *out, int cap) {
++    char path[8192];
++    if (!WBenchMsg) return 0;
++    if (wb_path(0, path, sizeof(path)) != 1) return -1;
++    struct DiskObject *icon = GetDiskObject((CONST_STRPTR)path);
++    if (!icon) return -1;
++    const char *value = (const char *)FindToolType(icon->do_ToolTypes, (STRPTR)key);
++    int result = 0;
++    if (value) {
++        size_t len = strlen(value);
++        if (len >= (size_t)cap) result = -1;
++        else { memcpy(out, value, len + 1); result = 1; }
++    }
++    FreeDiskObject(icon);
++    return result;
++}
++/* The program's drawer as a full DOS name. */
++int vc_progdir(char *out, int cap) {
++    BPTR dir = GetProgramDir();
++    if (!dir) return 0;
++    return NameFromLock(dir, (STRPTR)out, cap) ? 1 : -1;
++}
++/* DOS resolves volumes, assigns, colon roots and parent slashes. For a new
++ * save name, resolve its existing drawer and append only the final component. */
++int vc_absolute(const char *name, char *out, int cap) {
++    BPTR lock = Lock((CONST_STRPTR)name, ACCESS_READ);
++    if (lock) {
++        int ok = NameFromLock(lock, (STRPTR)out, cap);
++        UnLock(lock);
++        return ok ? 1 : -1;
++    }
++    const char *file = (const char *)FilePart((CONST_STRPTR)name);
++    size_t prefix = file - name;
++    char drawer[8192];
++    if (!*file || prefix >= sizeof(drawer)) return -1;
++    memcpy(drawer, name, prefix); drawer[prefix] = 0;
++    lock = Lock((CONST_STRPTR)drawer, ACCESS_READ);
++    if (!lock) return -1;
++    int ok = NameFromLock(lock, (STRPTR)out, cap);
++    UnLock(lock);
++    return ok && AddPart((STRPTR)out, (CONST_STRPTR)file, cap) ? 1 : -1;
++}
++void vc_error(const char *message) {
++    struct EasyStruct es = { sizeof(struct EasyStruct), 0, (CONST_STRPTR)"VectorCraft", (CONST_STRPTR)"%s", (CONST_STRPTR)"OK" };
++    IPTR args[] = { (IPTR)message };
++    EasyRequestArgs(NULL, &es, NULL, (RAWARG)args);
++}
+diff --git a/crates/aros-platform/src/lib.rs b/crates/aros-platform/src/lib.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..a2895ec173333d71691ec6082924601881d39035
+--- /dev/null
++++ b/crates/aros-platform/src/lib.rs
+@@ -0,0 +1,161 @@
++//! AROS startup and path bridge for VectorCraft. Unsafe code is isolated here, never in the
++//! engine or the UI. On other systems every function is a plain fallback, so the crate builds and
++//! its tests run on the host.
++#![allow(unsafe_code)]
++use std::path::PathBuf;
++
++#[cfg(target_os = "aros")]
++mod native {
++    use std::ffi::{CString, c_char};
++    unsafe extern "C" {
++        pub fn vc_workbench() -> i32;
++        pub fn vc_quiet_dos();
++        pub fn vc_wb_file(index: i32, out: *mut c_char, cap: i32) -> i32;
++        pub fn vc_tooltype(key: *const c_char, out: *mut c_char, cap: i32) -> i32;
++        pub fn vc_progdir(out: *mut c_char, cap: i32) -> i32;
++        pub fn vc_absolute(name: *const c_char, out: *mut c_char, cap: i32) -> i32;
++        pub fn vc_error(message: *const c_char);
++    }
++    pub fn cstr(s: &str) -> Result<CString, String> {
++        CString::new(s).map_err(|_| "path or setting contains NUL".into())
++    }
++    pub fn read(call: impl FnOnce(*mut c_char, i32) -> i32) -> Result<Option<String>, String> {
++        let mut bytes = vec![0u8; 8192];
++        let result = call(bytes.as_mut_ptr().cast(), bytes.len() as i32);
++        if result == 0 {
++            return Ok(None);
++        }
++        if result < 0 {
++            return Err("AROS could not resolve the startup data or the path (missing drawer, unreadable icon, or path too long)".into());
++        }
++        let end = bytes.iter().position(|&b| b == 0).ok_or("unterminated DOS result")?;
++        bytes.truncate(end);
++        String::from_utf8(bytes).map(Some).map_err(|_| "DOS path is not UTF-8".into())
++    }
++}
++
++/// Make DOS answer a missing volume with an error instead of a requester, for this process and
++/// the threads it starts. Call first thing in `main`.
++pub fn quiet_dos() {
++    #[cfg(target_os = "aros")]
++    // SAFETY: writes the calling process's own pr_WindowPtr on its own task.
++    unsafe {
++        native::vc_quiet_dos();
++    }
++}
++
++#[derive(Default, Debug)]
++pub struct Startup {
++    pub workbench: bool,
++    pub tooltypes: Vec<String>,
++    pub files: Vec<String>,
++}
++
++/// Workbench start data: the requested ToolTypes (`KEY=value`) and the documents passed with the
++/// program, as -nix paths. A Shell start returns the default (no ToolTypes, no files).
++pub fn startup(tooltype_keys: &[&str]) -> Result<Startup, String> {
++    #[cfg(target_os = "aros")]
++    {
++        // SAFETY: read-only CRT global, while main still owns the startup lifetime.
++        if unsafe { native::vc_workbench() } == 0 {
++            return Ok(Startup::default());
++        }
++        let mut out = Startup { workbench: true, ..Startup::default() };
++        for key in tooltype_keys {
++            let c = native::cstr(key)?;
++            // SAFETY: valid strings and owned writable output, copied before DiskObject is freed.
++            if let Some(value) = native::read(|p, n| unsafe { native::vc_tooltype(c.as_ptr(), p, n) })? {
++                out.tooltypes.push(format!("{key}={value}"));
++            }
++        }
++        for i in 1..1024 {
++            // SAFETY: C checks index against the borrowed WBStartup argument array.
++            match native::read(|p, n| unsafe { native::vc_wb_file(i, p, n) })? {
++                Some(path) => out.files.push(dos_to_nix(&path)?),
++                None => return Ok(out),
++            }
++        }
++        Err("too many Workbench documents".into())
++    }
++    #[cfg(not(target_os = "aros"))]
++    {
++        let _ = tooltype_keys;
++        Ok(Startup::default())
++    }
++}
++
++/// The program's drawer as an absolute -nix path (`/Volume/Drawer`).
++pub fn program_dir() -> Result<PathBuf, String> {
++    #[cfg(target_os = "aros")]
++    {
++        // SAFETY: owned writable output buffer.
++        native::read(|p, n| unsafe { native::vc_progdir(p, n) })?
++            .ok_or_else(|| "the program has no drawer".to_string())
++            .and_then(|p| dos_to_nix(&p))
++            .map(PathBuf::from)
++    }
++    #[cfg(not(target_os = "aros"))]
++    std::env::current_exe().map_err(|e| e.to_string())?.parent().map(PathBuf::from).ok_or_else(|| "the program has no folder".into())
++}
++
++/// A name as typed (AmigaDOS: volume, assign, relative, parent `/`) resolved by DOS to an
++/// absolute -nix path. For a name that does not exist yet its drawer must exist.
++pub fn absolute(name: &str) -> Result<PathBuf, String> {
++    #[cfg(target_os = "aros")]
++    {
++        let c = native::cstr(name)?;
++        // SAFETY: input outlives call; DOS receives an owned writable buffer.
++        native::read(|p, n| unsafe { native::vc_absolute(c.as_ptr(), p, n) })?
++            .ok_or_else(|| "path was not resolved".to_string())
++            .and_then(|p| dos_to_nix(&p))
++            .map(PathBuf::from)
++    }
++    #[cfg(not(target_os = "aros"))]
++    std::path::absolute(name).map_err(|e| e.to_string())
++}
++
++/// Report a startup error: standard error, and on AROS a requester (a Workbench start has no
++/// console to show it).
++pub fn show_error(message: &str) {
++    eprintln!("VectorCraft: {message}");
++    #[cfg(target_os = "aros")]
++    if let Ok(c) = native::cstr(message) {
++        // SAFETY: NUL-terminated string, the requester completes before it is freed.
++        unsafe {
++            native::vc_error(c.as_ptr());
++        }
++    }
++}
++
++/// A resolved DOS name (`Volume:rest`) in the -nix path mode the program runs in. No lexical
++/// parent collapsing: Lock/NameFromLock have already resolved it.
++pub fn dos_to_nix(path: &str) -> Result<String, String> {
++    let (volume, rest) = path.split_once(':').ok_or("DOS did not return a volume-qualified path")?;
++    if volume.is_empty() || volume.contains('/') {
++        return Err("invalid DOS volume name".into());
++    }
++    Ok(if rest.is_empty() { format!("/{volume}") } else { format!("/{volume}/{rest}") })
++}
++
++/// A normalized -nix absolute path as a DOS name, for requesters and messages.
++pub fn nix_to_dos(path: &str) -> Result<String, String> {
++    let rest = path.strip_prefix('/').ok_or("expected a normalized -nix absolute path")?;
++    let (volume, rest) = rest.split_once('/').unwrap_or((rest, ""));
++    if volume.is_empty() {
++        return Err("missing volume in -nix path".into());
++    }
++    Ok(format!("{volume}:{rest}"))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{dos_to_nix, nix_to_dos};
++    #[test]
++    fn normalized_paths_round_trip() {
++        for p in ["RAM:", "Work:My Pictures/zażółć.svg", "Ram Disk:a.svg"] {
++            assert_eq!(nix_to_dos(&dos_to_nix(p).unwrap()).unwrap(), p);
++        }
++        assert!(dos_to_nix(":bad").is_err());
++        assert!(dos_to_nix("no-volume").is_err());
++    }
++}
+diff --git a/crates/text/src/fontdb/dirs.rs b/crates/text/src/fontdb/dirs.rs
+index 2b39edbc15884b62fe267386a58aa774f3447113..8f36309d16351f966b99d363666acac007cfd919 100644
+--- a/crates/text/src/fontdb/dirs.rs
++++ b/crates/text/src/fontdb/dirs.rs
+@@ -150,6 +150,10 @@ pub fn system_font_dirs() -> Vec<PathBuf> {
+         }
+         #[cfg(windows)]
+         dirs.extend(registered_font_files(&dirs));
++    } else if cfg!(target_os = "aros") {
++        // FONTS: in the -nix path mode the program runs in. The Unix folders below would name
++        // volumes that do not exist (usr, run…), each a "Please insert volume" request.
++        dirs.push("/FONTS".into());
+     } else {
+         dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(Into::into));
+         // The XDG data folders' `fonts` (fontconfig's user folder; Flatpak, Snap, NixOS and Guix

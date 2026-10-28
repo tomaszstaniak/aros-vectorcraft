@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 16:33:23 +0100
+Subject: [PATCH] AROS: treat file ownership and permissions as on non-unix
+ systems
+
+The AROS Rust target is unix-family, but AROS is single-user and has protection bits instead of uid/gid, modes and ACLs, and rustix has no AROS support. rustix is no longer a dependency there, and the owner/permission checks of recovery folders, save-for-web previews and atomic saves take the existing non-unix branches.
+---
+ crates/engine/Cargo.toml                   |  4 +++-
+ crates/engine/src/cmd/recovery.rs          |  4 ++--
+ crates/format/Cargo.toml                   |  4 +++-
+ crates/format/src/atomic.rs                |  6 +++---
+ crates/ui-egui/src/dialogs/save_for_web.rs | 12 ++++++------
+ 5 files changed, 17 insertions(+), 13 deletions(-)
+
+diff --git a/crates/engine/Cargo.toml b/crates/engine/Cargo.toml
+index f495697ceba8c92f3f3df4f24d0489b25b192f5f..db402b941e93dd488f3f8a4addddb3592a48ce9e 100644
+--- a/crates/engine/Cargo.toml
++++ b/crates/engine/Cargo.toml
+@@ -47,7 +47,9 @@ log = { workspace = true }
+ 
+ # Whether a recovery area folder is this account's own (`FolderStore::own_area`). Already in
+ # Cargo.lock (tempfile, ui-egui), so this adds no new crate.
+-[target.'cfg(unix)'.dependencies]
++# AROS is a unix-family Rust target without the system calls rustix needs (single user, no
++# uid/gid or ACLs); the code paths that use it are left out there as on non-unix systems.
++[target.'cfg(all(unix, not(target_os = "aros")))'.dependencies]
+ rustix = { workspace = true, features = ["std", "process"] }
+ 
+ [dev-dependencies]
+diff --git a/crates/engine/src/cmd/recovery.rs b/crates/engine/src/cmd/recovery.rs
+index 28f7bf592330a89e4f5e176609a23a399e1711df..01f917b580d65bdd8e9efd59de4f5355632f69bc 100644
+--- a/crates/engine/src/cmd/recovery.rs
++++ b/crates/engine/src/cmd/recovery.rs
+@@ -259,7 +259,7 @@ impl FolderStore {
+     fn create_area(dir: &std::path::Path) -> std::result::Result<(), String> {
+         let mut builder = std::fs::DirBuilder::new();
+         builder.recursive(true);
+-        #[cfg(unix)]
++        #[cfg(all(unix, not(target_os = "aros")))]
+         std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+         builder.create(dir).map_err(|e| format!("{}: {e}", dir.display()))
+     }
+@@ -273,7 +273,7 @@ impl FolderStore {
+         if !m.file_type().is_dir() {
+             return Err(format!("{}: not a folder of its own", dir.display()));
+         }
+-        #[cfg(unix)]
++        #[cfg(all(unix, not(target_os = "aros")))]
+         if std::os::unix::fs::MetadataExt::uid(&m) != rustix::process::geteuid().as_raw() {
+             return Err(format!("{}: belongs to another account", dir.display()));
+         }
+diff --git a/crates/format/Cargo.toml b/crates/format/Cargo.toml
+index 55fbe7056a5bf82a5a0ee774e1e3c6784a55ea38..e60c231fe60d4d06112b40901bec1921acad9a45 100644
+--- a/crates/format/Cargo.toml
++++ b/crates/format/Cargo.toml
+@@ -18,7 +18,9 @@ flate2 = { workspace = true }
+ # A plain fsync where a volume refuses the full flush (`sync_file`, atomic.rs), and the replaced
+ # file's access ACL on Linux (`keep_permissions`). Already in Cargo.lock (tempfile), so this adds
+ # no new crate.
+-[target.'cfg(unix)'.dependencies]
++# AROS is a unix-family Rust target without the system calls rustix needs (single user, no
++# uid/gid or ACLs); the code paths that use it are left out there as on non-unix systems.
++[target.'cfg(all(unix, not(target_os = "aros")))'.dependencies]
+ rustix = { workspace = true, features = ["std", "fs"] }
+ 
+ [dev-dependencies]
+diff --git a/crates/format/src/atomic.rs b/crates/format/src/atomic.rs
+index f79b0bd37039aac169cfeb968b0c23106e6e8126..217d042f5bd6a48e8872c867fb4d2120d07c14f1 100644
+--- a/crates/format/src/atomic.rs
++++ b/crates/format/src/atomic.rs
+@@ -132,7 +132,7 @@ fn keep_old(target: &Path, old: &Path) -> io::Result<()> {
+ fn create_private(path: &Path) -> io::Result<File> {
+     let mut options = OpenOptions::new();
+     options.write(true).create_new(true);
+-    #[cfg(unix)]
++    #[cfg(all(unix, not(target_os = "aros")))]
+     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+     options.open(path)
+ }
+@@ -266,7 +266,7 @@ fn temp_path(target: &Path) -> io::Result<PathBuf> {
+ /// When the group or the ACL can't be kept, the replacement is readable by its owner alone rather
+ /// than by people the old file didn't let in. (Unix; Windows files have none to keep beyond
+ /// read-only, which makes the save fail as writing in place would.)
+-#[cfg(unix)]
++#[cfg(all(unix, not(target_os = "aros")))]
+ fn keep_permissions(target: &Path, tmp: &Path) -> io::Result<()> {
+     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+     // A new file: the default permissions.
+@@ -297,7 +297,7 @@ fn keep_acl(_: &Path, _: &Path) -> bool {
+     true
+ }
+ 
+-#[cfg(not(unix))]
++#[cfg(any(not(unix), target_os = "aros"))]
+ fn keep_permissions(_: &Path, _: &Path) -> io::Result<()> {
+     Ok(())
+ }
+diff --git a/crates/ui-egui/src/dialogs/save_for_web.rs b/crates/ui-egui/src/dialogs/save_for_web.rs
+index b31bfa308e150849637dbb45f2940ad4f2f8349d..c5277e7a2af65a6c587d35ed1981879dda2addbc 100644
+--- a/crates/ui-egui/src/dialogs/save_for_web.rs
++++ b/crates/ui-egui/src/dialogs/save_for_web.rs
+@@ -283,7 +283,7 @@ fn new_folder(parent: &std::path::Path, prefix: &str) -> Result<String, String>
+ }
+ 
+ /// A builder for folders that only their owner can read, write or open (mode 0o700).
+-#[cfg(unix)]
++#[cfg(all(unix, not(target_os = "aros")))]
+ fn private_folder() -> std::fs::DirBuilder {
+     let mut b = std::fs::DirBuilder::new();
+     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+@@ -291,7 +291,7 @@ fn private_folder() -> std::fs::DirBuilder {
+ }
+ 
+ /// A builder for folders: a plain one outside unix.
+-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
++#[cfg(all(any(not(unix), target_os = "aros"), not(target_arch = "wasm32")))]
+ fn private_folder() -> std::fs::DirBuilder {
+     std::fs::DirBuilder::new()
+ }
+@@ -314,26 +314,26 @@ fn refused(m: &std::fs::Metadata) -> Option<&'static str> {
+ }
+ 
+ /// Whether the current user owns the file with metadata `m`.
+-#[cfg(unix)]
++#[cfg(all(unix, not(target_os = "aros")))]
+ fn mine(m: &std::fs::Metadata) -> bool {
+     std::os::unix::fs::MetadataExt::uid(m) == rustix::process::geteuid().as_raw()
+ }
+ 
+ /// Whether the current user owns the file with metadata `m`: always true outside unix.
+-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
++#[cfg(all(any(not(unix), target_os = "aros"), not(target_arch = "wasm32")))]
+ fn mine(_: &std::fs::Metadata) -> bool {
+     true
+ }
+ 
+ /// Whether users other than the owner of the file with metadata `m` can write to it.
+-#[cfg(unix)]
++#[cfg(all(unix, not(target_os = "aros")))]
+ fn others_can_write(m: &std::fs::Metadata) -> bool {
+     std::os::unix::fs::MetadataExt::mode(m) & 0o022 != 0
+ }
+ 
+ /// Whether users other than the owner of the file with metadata `m` can write to it: always false
+ /// outside unix.
+-#[cfg(all(not(unix), not(target_arch = "wasm32")))]
++#[cfg(all(any(not(unix), target_os = "aros"), not(target_arch = "wasm32")))]
+ fn others_can_write(_: &std::fs::Metadata) -> bool {
+     false
+ }
