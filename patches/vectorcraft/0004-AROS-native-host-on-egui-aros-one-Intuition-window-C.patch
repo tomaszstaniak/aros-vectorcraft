@@ -1,0 +1,524 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 17:26:11 +0100
+Subject: [PATCH] AROS: native host on egui-aros (one Intuition window, CPU or
+ OpenGL interface)
+
+VectorCraft for AROS runs vectorcraft-ui-egui's VectorcraftApp in egui-aros instead of eframe: one window through winit's AROS backend, the interface drawn by egui-aros's CPU renderer or by OpenGL (egui_glow over gl.library). Documents are rendered by vello_cpu as upstream.
+
+GUI_RENDERER chooses the interface renderer: a Shell argument (--gui-renderer CPU|AUTO|GPU) wins over the icon's ToolType, which wins over CPU. CPU never opens OpenGL; AUTO falls back with the reason in the log; GPU fails visibly. The log records the requested and used renderer and, for OpenGL, vendor, renderer, version, GLSL and whether it is a software rasterizer.
+
+Settings, libraries, recovery copies and the log live in VectorCraftData in the program's drawer (VECTORCRAFT_CONFIG_DIR, upstream's own mechanism). Upstream's settings modules are included unchanged by #[path]. Services: ASL requesters (paths converted between DOS and -nix names), clipboard text, OpenURL, atomic writes. Documents named in the Shell or passed by Workbench are resolved by DOS.
+---
+ apps/vectorcraft-aros/Cargo.toml    |  24 +++
+ apps/vectorcraft-aros/src/launch.rs | 142 +++++++++++++++
+ apps/vectorcraft-aros/src/main.rs   |  18 ++
+ apps/vectorcraft-aros/src/native.rs | 272 ++++++++++++++++++++++++++++
+ crates/aros-platform/src/lib.rs     |  10 +
+ 5 files changed, 466 insertions(+)
+ create mode 100644 apps/vectorcraft-aros/Cargo.toml
+ create mode 100644 apps/vectorcraft-aros/src/launch.rs
+ create mode 100644 apps/vectorcraft-aros/src/main.rs
+ create mode 100644 apps/vectorcraft-aros/src/native.rs
+
+diff --git a/apps/vectorcraft-aros/Cargo.toml b/apps/vectorcraft-aros/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..78de598e632e46582da49f2ea99e34dac62212b4
+--- /dev/null
++++ b/apps/vectorcraft-aros/Cargo.toml
+@@ -0,0 +1,24 @@
++[package]
++name = "vectorcraft-aros"
++version.workspace = true
++edition.workspace = true
++license.workspace = true
++publish = false
++
++[lints]
++workspace = true
++
++[[bin]]
++name = "VectorCraft"
++path = "src/main.rs"
++
++[target.'cfg(target_os = "aros")'.dependencies]
++vectorcraft-aros-platform = { path = "../../crates/aros-platform" }
++vectorcraft-engine = { workspace = true, features = ["bundled-fonts"] }
++vectorcraft-ui-egui = { workspace = true }
++vectorcraft-text = { workspace = true }
++egui = { workspace = true }
++# One window through Intuition; OpenGL (gl.library) is compiled in and chosen at run time.
++egui-aros = { version = "0.1", features = ["asl", "glow"] }
++log = { workspace = true }
++serde_json = { workspace = true }
+diff --git a/apps/vectorcraft-aros/src/launch.rs b/apps/vectorcraft-aros/src/launch.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..0085b764aecd43ee346e6d7bbf6e061e1dc1cb46
+--- /dev/null
++++ b/apps/vectorcraft-aros/src/launch.rs
+@@ -0,0 +1,142 @@
++//! The interface renderer choice: Shell argument, Workbench ToolType, default. No platform or GPU
++//! calls here, so the rules are tested on the host.
++
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub enum Mode {
++    #[default]
++    Cpu,
++    Auto,
++    Gpu,
++}
++
++impl Mode {
++    pub fn parse(value: &str, key: &str) -> Result<Self, String> {
++        match value.trim().to_ascii_uppercase().as_str() {
++            "CPU" => Ok(Self::Cpu),
++            "AUTO" => Ok(Self::Auto),
++            "GPU" => Ok(Self::Gpu),
++            _ => Err(format!("{key}: unknown value \u{201c}{value}\u{201d}; expected CPU, AUTO or GPU")),
++        }
++    }
++
++    pub fn name(self) -> &'static str {
++        match self {
++            Self::Cpu => "CPU",
++            Self::Auto => "AUTO",
++            Self::Gpu => "GPU",
++        }
++    }
++}
++
++/// What the program was started with, after the renderer choice has been taken out.
++#[derive(Debug, Default, PartialEq, Eq)]
++pub struct Launch {
++    pub gui: Mode,
++    /// Where `gui` came from: "argument", "ToolType" or "default".
++    pub source: &'static str,
++    pub help: bool,
++    pub version: bool,
++    /// Documents to open, as given.
++    pub files: Vec<String>,
++}
++
++/// The ToolTypes the program reads from its icon.
++pub const TOOLTYPES: [&str; 1] = ["GUI_RENDERER"];
++
++/// Shell argument > Workbench ToolType > CPU. A Shell start passes no ToolTypes (the icon is not
++/// read), a Workbench start no arguments. Only the value in force is parsed, so a stale ToolType
++/// cannot stop a start whose argument overrides it.
++pub fn parse(args: &[String], tooltypes: &[String]) -> Result<Launch, String> {
++    let mut out = Launch { source: "default", ..Launch::default() };
++    let mut gui = None;
++    let mut it = args.iter();
++    while let Some(arg) = it.next() {
++        if arg == "--" {
++            out.files.extend(it.cloned());
++            break;
++        }
++        let (key, inline) = arg.split_once('=').map_or((arg.as_str(), None), |(k, v)| (k, Some(v)));
++        match key {
++            "--gui-renderer" => {
++                let value = inline.or_else(|| it.next().map(String::as_str)).ok_or("--gui-renderer: missing CPU, AUTO or GPU")?;
++                gui = Some(Mode::parse(value, "--gui-renderer")?);
++            }
++            "--help" | "-h" => out.help = true,
++            "--version" | "-V" => out.version = true,
++            _ if arg.starts_with("--") => return Err(format!("unknown option \u{201c}{arg}\u{201d}; see --help")),
++            _ => out.files.push(arg.clone()),
++        }
++    }
++    if let Some(mode) = gui {
++        out.gui = mode;
++        out.source = "argument";
++        return Ok(out);
++    }
++    for entry in tooltypes {
++        let Some((key, value)) = entry.split_once('=') else { continue };
++        if key.trim().eq_ignore_ascii_case("GUI_RENDERER") {
++            out.gui = Mode::parse(value, "GUI_RENDERER")?;
++            out.source = "ToolType";
++        }
++    }
++    Ok(out)
++}
++
++pub const HELP: &str = "\
++Usage: VectorCraft [--gui-renderer CPU|AUTO|GPU] [FILE...]
++
++  --gui-renderer CPU   draw the interface with the processor (default); no OpenGL is opened
++  --gui-renderer AUTO  use OpenGL when it opens, otherwise the processor (the reason is logged)
++  --gui-renderer GPU   use OpenGL or stop with an error
++  --version            print the version
++
++Workbench: ToolType GUI_RENDERER=CPU|AUTO|GPU in the program's icon. An argument given in the
++Shell takes priority; the icon is not read then. Values ignore letter case.
++
++OpenGL draws the interface and shows the drawing. The drawing itself is always rendered by the
++processor. Settings and the log (VectorCraft.log) are kept in VectorCraftData in the program's
++drawer.";
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    fn s(v: &[&str]) -> Vec<String> {
++        v.iter().map(|x| x.to_string()).collect()
++    }
++
++    #[test]
++    fn default_is_cpu() {
++        let l = parse(&[], &[]).unwrap();
++        assert_eq!((l.gui, l.source), (Mode::Cpu, "default"));
++    }
++
++    #[test]
++    fn argument_beats_tooltype_and_ignores_its_bad_value() {
++        let l = parse(&s(&["--gui-renderer", "auto", "Work:a b.svg"]), &s(&["GUI_RENDERER=bogus"])).unwrap();
++        assert_eq!((l.gui, l.source), (Mode::Auto, "argument"));
++        assert_eq!(l.files, s(&["Work:a b.svg"]));
++        let l = parse(&s(&["--gui-renderer=gPu"]), &[]).unwrap();
++        assert_eq!(l.gui, Mode::Gpu);
++    }
++
++    #[test]
++    fn tooltype_applies_without_argument() {
++        let l = parse(&[], &s(&["(GUI_RENDERER=GPU)", "gui_renderer=Auto"])).unwrap();
++        assert_eq!((l.gui, l.source), (Mode::Auto, "ToolType"));
++    }
++
++    #[test]
++    fn bad_values_are_errors() {
++        assert!(parse(&s(&["--gui-renderer", "fast"]), &[]).is_err());
++        assert!(parse(&s(&["--gui-renderer"]), &[]).is_err());
++        assert!(parse(&[], &s(&["GUI_RENDERER=fast"])).is_err());
++        assert!(parse(&s(&["--bogus"]), &[]).is_err());
++    }
++
++    #[test]
++    fn double_dash_keeps_names() {
++        let l = parse(&s(&["--", "--gui-renderer=GPU"]), &[]).unwrap();
++        assert_eq!(l.files, s(&["--gui-renderer=GPU"]));
++        assert_eq!(l.gui, Mode::Cpu);
++    }
++}
+diff --git a/apps/vectorcraft-aros/src/main.rs b/apps/vectorcraft-aros/src/main.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..41dd7c160f32d35a058765ca97025ddb44efc8c6
+--- /dev/null
++++ b/apps/vectorcraft-aros/src/main.rs
+@@ -0,0 +1,18 @@
++//! VectorCraft for AROS: the upstream app (vectorcraft-ui-egui) in one Intuition window through
++//! egui-aros. The interface is drawn by the CPU or, on request, by OpenGL; documents are always
++//! rendered by the CPU (vello_cpu), as upstream.
++#![forbid(unsafe_code)]
++
++mod launch;
++#[cfg(target_os = "aros")]
++mod native;
++
++fn main() -> std::process::ExitCode {
++    #[cfg(target_os = "aros")]
++    return native::main();
++    #[cfg(not(target_os = "aros"))]
++    {
++        eprintln!("this program runs on AROS; the desktop build is apps/vectorcraft");
++        std::process::ExitCode::FAILURE
++    }
++}
+diff --git a/apps/vectorcraft-aros/src/native.rs b/apps/vectorcraft-aros/src/native.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..8e14995dd2f2729c184b55333c49ddb3d99be04b
+--- /dev/null
++++ b/apps/vectorcraft-aros/src/native.rs
+@@ -0,0 +1,272 @@
++//! The AROS host: start data, settings folder, logging, services and the egui-aros window.
++
++use std::cell::RefCell;
++use std::io::Write as _;
++use std::rc::Rc;
++use std::sync::Mutex;
++
++use vectorcraft_aros_platform as platform;
++use vectorcraft_engine::Session;
++use vectorcraft_engine::cmd::fileio;
++use vectorcraft_ui_egui::{FilePick, Services, VectorcraftApp};
++
++use crate::launch::{self, Mode};
++
++// Upstream's settings code, unchanged: where ui.json and the user's folders live
++// (VECTORCRAFT_CONFIG_DIR, set below to the program's drawer) and how they are read and written.
++#[path = "../../vectorcraft/src/prefs_dir.rs"]
++mod prefs_dir;
++#[path = "../../vectorcraft/src/prefs.rs"]
++mod prefs;
++
++const VERSION: &str = env!("CARGO_PKG_VERSION");
++const TARGET: &str = match option_env!("VECTORCRAFT_BUILD_TARGET") {
++    Some(t) => t,
++    None => "aros",
++};
++
++// ---------------------------------------------------------------------------------------------
++// Log: VectorCraft.log in the settings folder (stderr too, for Shell starts).
++
++static LOG: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
++
++fn line(text: &str) {
++    eprintln!("{text}");
++    if let Some(file) = LOG.get_or_init(|| {
++        let dir = std::env::var_os("VECTORCRAFT_CONFIG_DIR")?;
++        let path = std::path::Path::new(&dir).join("VectorCraft.log");
++        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(Mutex::new)
++    }) {
++        let mut f = file.lock().unwrap_or_else(|p| p.into_inner());
++        let _ = writeln!(f, "{text}");
++        let _ = f.flush();
++    }
++}
++
++struct Logger;
++static LOGGER: Logger = Logger;
++impl log::Log for Logger {
++    fn enabled(&self, m: &log::Metadata) -> bool {
++        m.level() <= log::Level::Info
++    }
++    fn log(&self, r: &log::Record) {
++        if self.enabled(r.metadata()) {
++            line(&format!("{} {}: {}", r.level(), r.target(), r.args()));
++        }
++    }
++    fn flush(&self) {}
++}
++
++fn fail(message: &str, workbench: bool) -> std::process::ExitCode {
++    line(&format!("ERROR: {message}"));
++    if workbench {
++        platform::show_error(message);
++    }
++    std::process::ExitCode::from(20)
++}
++
++// ---------------------------------------------------------------------------------------------
++
++pub fn main() -> std::process::ExitCode {
++    platform::quiet_dos();
++    let startup = match platform::startup(&launch::TOOLTYPES) {
++        Ok(s) => s,
++        Err(e) => return fail(&e, true),
++    };
++    let wb = startup.workbench;
++    let args: Vec<String> = if wb { Vec::new() } else { std::env::args().skip(1).collect() };
++    let launch = match launch::parse(&args, &startup.tooltypes) {
++        Ok(l) => l,
++        Err(e) => return fail(&e, wb),
++    };
++    if launch.help {
++        println!("VectorCraft {VERSION} for AROS ({TARGET})\n\n{}", launch::HELP);
++        return std::process::ExitCode::SUCCESS;
++    }
++    if launch.version {
++        println!("VectorCraft {VERSION} for AROS ({TARGET})");
++        return std::process::ExitCode::SUCCESS;
++    }
++    // Settings beside the program unless the user chose a folder: a portable drawer, as
++    // upstream's portable mode, without relying on the executable's name (relative on AROS).
++    let data = match platform::program_dir() {
++        Ok(dir) => dir.join("VectorCraftData"),
++        Err(e) => return fail(&format!("cannot find the program's drawer: {e}"), wb),
++    };
++    platform::set_default_config_dir(&data);
++    if log::set_logger(&LOGGER).is_ok() {
++        log::set_max_level(log::LevelFilter::Info);
++    }
++    std::panic::set_hook(Box::new(|p| line(&format!("PANIC: {p}"))));
++    line(&format!("VectorCraft {VERSION} for AROS ({TARGET}); start from {}", if wb { "Workbench" } else { "Shell" }));
++    line(&format!("GUI_RENDERER requested={} (from {})", launch.gui.name(), launch.source));
++
++    // Document names as -nix paths: Workbench gives them resolved, Shell names are resolved by
++    // DOS (volumes, assigns, relative names, parent slashes).
++    let mut files = startup.files;
++    for name in &launch.files {
++        match platform::absolute(name) {
++            Ok(p) => files.push(p.to_string_lossy().into_owned()),
++            Err(e) => return fail(&format!("{name}: {e}"), wb),
++        }
++    }
++
++    prefs_dir::install_fonts();
++    let saved = prefs::read_prefs();
++    let ctx = egui::Context::default();
++    VectorcraftApp::install_ime_reset_hooks(&ctx);
++    let window: Rc<RefCell<Option<egui_aros::WindowHandle>>> = Rc::new(RefCell::new(None));
++    let mut session = Session::new();
++    prefs_dir::attach_profile_store(&mut session);
++    prefs_dir::attach_plugin_store(&mut session);
++    let mut app = VectorcraftApp::new(session, services(window.clone()));
++    prefs::load_prefs(&mut app, saved);
++    prefs_dir::attach_pdf_preset_store(&mut app.session);
++    // The user's own libraries live next to the settings, as upstream.
++    let beside = |dir: &str| prefs::prefs_path().and_then(|p| Some(p.parent()?.join(dir).to_string_lossy().to_string()));
++    app.session.swatch_libraries.set_user_dir(beside("Swatches"));
++    app.session.style_libraries.set_user_dir(beside("Graphic Styles"));
++    app.session.symbol_libraries.set_user_dir(beside("Symbols"));
++    app.session.brush_libraries.set_user_dir(beside("Brushes"));
++    vectorcraft_ui_egui::panels::library_panel::restore(&mut app);
++    if prefs::prefs_enabled() {
++        app.session.libraries.set_dir(beside("Libraries"));
++        app.session.recovery.set_default_folder(beside("Data Recovery"));
++    }
++    for f in files {
++        if let Err(e) = vectorcraft_ui_egui::io::open_reporting(&mut app, &f) {
++            line(&format!("{f}: {e}"));
++        }
++    }
++
++    let options = egui_aros::Options {
++        title: "VectorCraft".into(),
++        inner_size: (1024, 700),
++        min_inner_size: Some((640, 400)),
++        renderer: match launch.gui {
++            Mode::Cpu => egui_aros::RendererRequest::Cpu,
++            Mode::Auto => egui_aros::RendererRequest::Auto,
++            Mode::Gpu => egui_aros::RendererRequest::Gpu,
++        },
++        ..Default::default()
++    };
++    let mut host = Host { app, ctx: ctx.clone(), window, renderer_logged: false };
++    let result = egui_aros::run(options, ctx, &mut host);
++    line(&format!("GUI_RENDERER {}", describe()));
++
++    // The window is closed. Save the settings, wait for background saves and exports, then let
++    // the app (and with it its worker threads' channels) go before main returns: AROS's pthread
++    // library waits for every thread when the process exits.
++    prefs::save_prefs(&host.app);
++    vectorcraft_ui_egui::background::wait_all(&mut host.app);
++    drop(host);
++    line("shutdown: complete");
++    match result {
++        Ok(()) => std::process::ExitCode::SUCCESS,
++        Err(e) => fail(&e.to_string(), wb),
++    }
++}
++
++/// One line for the log: requested and chosen renderer, the reason for a fallback, and for
++/// OpenGL the driver strings and whether it is a software rasterizer (softpipe/llvmpipe: no
++/// hardware acceleration even though OpenGL is in use).
++fn describe() -> String {
++    egui_aros::renderer_info().map_or_else(|| "not chosen (the window did not open)".to_owned(), |info| info.summary())
++}
++
++// ---------------------------------------------------------------------------------------------
++
++struct Host {
++    app: VectorcraftApp,
++    /// ui-egui's input hook takes the context; egui-aros's does not pass it.
++    ctx: egui::Context,
++    window: Rc<RefCell<Option<egui_aros::WindowHandle>>>,
++    renderer_logged: bool,
++}
++
++impl egui_aros::App for Host {
++    fn started(&mut self, window: egui_aros::WindowHandle) {
++        *self.window.borrow_mut() = Some(window);
++    }
++
++    fn logic(&mut self, ctx: &egui::Context) {
++        if !self.renderer_logged {
++            self.renderer_logged = true;
++            line(&format!("GUI_RENDERER {}", describe()));
++        }
++        self.app.tick(ctx);
++        self.app.finish_ime_logic(ctx);
++        if self.app.ui.status == "quit" {
++            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
++        }
++    }
++
++    fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
++        self.app.raw_input_hook(&self.ctx, raw);
++    }
++
++    fn ui(&mut self, ui: &mut egui::Ui) {
++        self.app.ui(ui);
++        if self.app.take_prefs_changed() {
++            prefs::save_prefs(&self.app);
++        }
++    }
++}
++
++// ---------------------------------------------------------------------------------------------
++// Services: ASL requesters, files, clipboard text, OpenURL.
++
++type SharedWindow = Rc<RefCell<Option<egui_aros::WindowHandle>>>;
++
++/// An AmigaDOS pattern for a pick's file types: `#?.(svg|pdf)`; every file when it has none.
++fn pattern(pick: &FilePick) -> String {
++    let mut exts: Vec<&str> = pick.filters.iter().flat_map(|(_, e)| e.iter().map(String::as_str)).collect();
++    exts.dedup();
++    if exts.is_empty() || exts.contains(&"*") { "#?".into() } else { format!("#?.({})", exts.join("|")) }
++}
++
++/// The requester's starting drawer as a DOS name.
++fn start_drawer(folder: Option<&str>) -> String {
++    folder.and_then(|f| platform::nix_to_dos(f).ok()).unwrap_or_default()
++}
++
++fn pick(window: &SharedWindow, select: egui_aros::asl::Select, title: &str, folder: Option<&str>, name: &str, pat: &str) -> Vec<String> {
++    let Some(w) = window.borrow().clone() else { return Vec::new() };
++    egui_aros::asl::request(&w, select, title, &start_drawer(folder), name, pat)
++        .into_iter()
++        .filter_map(|dos| platform::dos_to_nix(&dos).map_err(|e| line(&format!("requester: {dos}: {e}"))).ok())
++        .collect()
++}
++
++fn write_file(path: &str, bytes: &[u8]) -> Result<(), String> {
++    fileio::write_atomic(std::path::Path::new(path), bytes).map_err(|e| e.to_string())
++}
++
++fn services(window: SharedWindow) -> Services {
++    use egui_aros::asl::Select;
++    let (w1, w2, w3, w4) = (window.clone(), window.clone(), window.clone(), window);
++    Services {
++        pick_open: Some(Box::new(move |p: &FilePick| {
++            pick(&w1, Select::Open, "Open", p.folder.as_deref(), "", &pattern(p)).into_iter().next()
++        })),
++        pick_open_multi: Some(Box::new(move || pick(&w2, Select::OpenMany, "Place", None, "", "#?"))),
++        pick_save: Some(Box::new(move |p: &FilePick| {
++            pick(&w3, Select::Save, "Save", p.folder.as_deref(), &p.name, &pattern(p)).into_iter().next()
++        })),
++        pick_folder: Some(Box::new(move || pick(&w4, Select::Drawer, "Choose drawer", None, "", "#?").into_iter().next())),
++        read: Some(Box::new(|p: &str| std::fs::read(p).map_err(|e| e.to_string()))),
++        write: Some(Box::new(write_file)),
++        exists: Some(Box::new(|p: &str| std::path::Path::new(p).exists())),
++        write_shared: Some(std::sync::Arc::new(write_file)),
++        stream_shared: Some(std::sync::Arc::new(|p: &str, fill: &mut dyn FnMut(&mut dyn std::io::Write) -> std::io::Result<()>| {
++            fileio::write_file_with(p, fill).map_err(|e| e.to_string())
++        })),
++        clipboard_read: Some(Box::new(egui_aros::clipboard_text)),
++        open_url: Some(Box::new(|url: &str| {
++            if !egui_aros::open_url(url) {
++                log::warn!("could not open {url}");
++            }
++        })),
++        ..Default::default()
++    }
++}
+diff --git a/crates/aros-platform/src/lib.rs b/crates/aros-platform/src/lib.rs
+index a2895ec173333d71691ec6082924601881d39035..9d6939a9e07538f0962cbc48d0bbfec5eb7760f5 100644
+--- a/crates/aros-platform/src/lib.rs
++++ b/crates/aros-platform/src/lib.rs
+@@ -44,6 +44,16 @@ pub fn quiet_dos() {
+     }
+ }
+ 
++/// Point VectorCraft's settings at `dir` (the program's own `VectorCraftData`), unless the user
++/// set `VECTORCRAFT_CONFIG_DIR` already. Call in `main` before any other thread starts.
++pub fn set_default_config_dir(dir: &std::path::Path) {
++    if std::env::var_os("VECTORCRAFT_CONFIG_DIR").is_none() {
++        // SAFETY: called on the main thread before the program starts any other thread, so no
++        // thread reads the environment concurrently.
++        unsafe { std::env::set_var("VECTORCRAFT_CONFIG_DIR", dir) };
++    }
++}
++
+ #[derive(Default, Debug)]
+ pub struct Startup {
+     pub workbench: bool,
