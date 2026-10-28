@@ -5,7 +5,7 @@ Base: master `67f7b775421aca4ea8ee609c975ff459ebf69815` (2026-10-28).
 Branch: `posixc-flock-per-description`, commit `a265e734459ef4cf2762fd30e6467c5b967603d7`
 (fork tomaszstaniak/AROS).
 
-Status: prepared 2026-10-28; submission URL below once sent.
+Status: submitted 2026-10-28 as https://github.com/aros-development-team/AROS/pull/1919 (head a265e73445, open).
 
 ## Problem
 
@@ -56,4 +56,4 @@ posixc) and never reached flock(); fixed to `O_RDWR | O_CREAT`. New test
 
 ## Disposition
 
-See the submission line below.
+Submitted: https://github.com/aros-development-team/AROS/pull/1919, revision a265e734459e. Remaining: review; i386/arm/m68k builds and SMP runs not done. The rust-aros `rs_flock` wrapper stays until the fix is in the systems we ship for.
