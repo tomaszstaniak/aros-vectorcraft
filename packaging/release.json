@@ -43,7 +43,11 @@
         "lto": "fat",
         "panic": "unwind",
         "features": []
-      }
+      },
+      "limitations": [
+        "- OpenGL (AUTO, GPU): AROS One 1.3 and ABIv11 2026.09 have Mesa's software",
+        "  renderer only. It works, but it is several times slower than CPU."
+      ]
     },
     "aros-x86_64-abiv1-pc": {
       "system": "AROS x86_64, mainline ABIv1 (built against AROS 9802c8c0, 2026-10-28)",
@@ -53,7 +57,11 @@
         "lto": "fat",
         "panic": "abort",
         "features": []
-      }
+      },
+      "limitations": [
+        "- OpenGL (AUTO, GPU) works with Mesa's software renderer, which is slower",
+        "  than CPU. Hardware OpenGL drivers have not been tested."
+      ]
     },
     "aros-aarch64-abiv1-raspi": {
       "system": "AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22)",
@@ -63,7 +71,25 @@
         "lto": "fat",
         "panic": "abort",
         "features": []
-      }
+      },
+      "limitations": [
+        "- OpenGL is off: AUTO uses the CPU, GPU stops with a message. It has not",
+        "  been tested on Pi hardware, and under emulation it stopped the system.",
+        "  VECTORCRAFT_EXPERIMENTAL_GL=1 turns it on at your own risk.",
+        "- Tested in an emulator only, with the keyboard; not on a physical Pi."
+      ]
     }
-  }
+  },
+  "limitations": [
+    "- One window. Floating panels open inside the main window, not as windows",
+    "  of their own.",
+    "- Every change redraws the whole window. On slow machines and in emulators",
+    "  the interface follows with a delay.",
+    "- Letters typed with a keymap other than ISO 8859-1 can arrive wrong. File",
+    "  and drawer names must be plain ASCII or UTF-8.",
+    "- The clipboard carries text only. File > Print saves a PDF instead of",
+    "  printing.",
+    "- No automatic updates. The automation server (vectorcraft-cli mcp, the",
+    "  --control port) and plug-ins have not been tested on AROS."
+  ]
 }

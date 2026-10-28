@@ -59,10 +59,7 @@ renderer (softpipe), it is slower than CPU, which is why CPU is the default.
 Known limitations
 -----------------
 
-TODO(maintainer): list the limitations confirmed on @SYSTEM@.
-TODO(maintainer): file formats that do not open or save on AROS, if any.
-TODO(maintainer): OpenGL (AUTO/GPU) result on this system.
-TODO(maintainer): memory and speed notes for large documents.
+@LIMITATIONS@
 
 Licences
 --------

@@ -25,8 +25,12 @@ Unpack the archive for your system anywhere writable and double-click VectorCraf
 
 ## Known limitations
 
-- TODO(maintainer): limitations confirmed on each system.
-- TODO(maintainer): OpenGL (AUTO/GPU) results per system.
+- One window: floating panels open inside the main window.
+- Every change redraws the whole window, so on slow machines and in emulators the interface follows with a delay.
+- OpenGL: on AROS One 1.3, ABIv11 2026.09 and mainline it is Mesa's software renderer, slower than CPU; hardware OpenGL drivers have not been tested. On the Raspberry Pi OpenGL is off (not tested on Pi hardware); `VECTORCRAFT_EXPERIMENTAL_GL=1` turns it on at your own risk.
+- The Raspberry Pi package has been tested in an emulator only, not on a physical Pi.
+- Letters typed with a keymap other than ISO 8859-1 can arrive wrong; file and drawer names must be plain ASCII or UTF-8.
+- Clipboard text only. File > Print saves a PDF. No automatic updates. The automation server and plug-ins have not been tested on AROS.
 - Shell starts need a 16 MiB stack; the Workbench icon sets it.
 
 Licences and notices for VectorCraft and everything built into it are in the `Licenses` drawer of each package.

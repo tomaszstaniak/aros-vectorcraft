@@ -6,3 +6,4 @@
 0006-AROS-host-release-the-UI-thread-s-caches-at-exit-pla.patch
 0007-AROS-host-optional-frame-cost-log-VECTORCRAFT_FRAME_.patch
 0008-AROS-host-Workbench-exit-closed-log-quiet-Workbench-.patch
+0009-AROS-host-OpenGL-on-the-Raspberry-Pi-only-on-explici.patch

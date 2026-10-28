@@ -307,7 +307,8 @@ def build_txt(release, spec, manifest, repo_head, packaged):
 def readme(release, spec):
     text = (PACKAGING / "ReadMe.txt").read_text()
     for key, value in (("@VERSION@", release["version"]), ("@UPSTREAM_VERSION@", release["upstream_version"]),
-                       ("@SYSTEM@", spec["system"])):
+                       ("@SYSTEM@", spec["system"]),
+                       ("@LIMITATIONS@", "\n".join(release["limitations"] + spec["limitations"]))):
         text = text.replace(key, value)
     leftover = re.findall(r"@[A-Z_]+@", text)
     if leftover:
