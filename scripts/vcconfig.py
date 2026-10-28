@@ -11,25 +11,38 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 
-# Build targets (<system>-<arch>-<abi>-<platform>) and their rust-aros profile.
+# Build targets (<system>-<arch>-<abi>-<platform>) and their rust-aros profile. `aros_src_commit`
+# is the AROS source whose compiler/pthread matches the target SDK's libpthread.a; `elf` is the
+# (EI_ABIVERSION, e_machine) pair collect-aros writes for the target.
 TARGETS = {
-    "aros-x86_64-abiv11-pc": {"profile": "v11", "panic": "unwind"},
+    "aros-x86_64-abiv11-pc": {"profile": "v11", "panic": "unwind",
+                              "aros_src_commit": "5376f09bc1ed0c36a12fbb096406013f8a046e89"},
     "aros-x86_64-abiv1-pc": {"profile": "x86_64-v1-pc", "panic": "abort"},
+    # Native Raspberry Pi SDK 20260822. Its pthread is mainline cc39c62 (rust-aros
+    # docs/integration/runtime-arm-20261023.md); the newer Macaros source needs an errno hook
+    # this SDK does not export.
+    "aros-aarch64-abiv1-raspi": {"profile": "aarch64-v1-raspi", "panic": "abort",
+                                 "aros_src_commit": "cc39c62f33d90b842540e79d5e47357590c014ac",
+                                 "elf": (1, 183)},
 }
 
 # key: (environment variable, default, description)
 SETTINGS = {
     "target": ("VECTORCRAFT_TARGET", "aros-x86_64-abiv11-pc", "build target: " + ", ".join(sorted(TARGETS))),
-    "aros_gcc": ("VECTORCRAFT_AROS_GCC", None, "x86_64 AROS C compiler driver matching the SDK"),
+    "aros_gcc": ("VECTORCRAFT_AROS_GCC", None, "AROS C compiler driver matching the SDK (x86_64 GCC, aarch64 Clang)"),
     "aros_ar": ("VECTORCRAFT_AROS_AR", None, "archiver from the same toolchain"),
     "aros_strip": ("VECTORCRAFT_AROS_STRIP", None, "strip from the same toolchain (optional)"),
     "aros_sdk": ("VECTORCRAFT_AROS_SDK", None, "native ABI-matched C SDK used as --sysroot"),
     "rust_aros": ("VECTORCRAFT_RUST_AROS", None, "rust-aros Git checkout (target template, libc-aros)"),
     "rust_aros_commit": ("VECTORCRAFT_RUST_AROS_COMMIT", "b0603070b10bdd3d71b8c83b23a2f1ff1b2e7eb2",
                          "rust-aros commit whose target template and libc-aros are used"),
-    "aros_src": ("VECTORCRAFT_AROS_SRC", None, "deadwood2/AROS (ABIv11) Git checkout; read-only source of the pthread link library (v11 only)"),
-    "aros_src_commit": ("VECTORCRAFT_AROS_SRC_COMMIT", "5376f09bc1ed0c36a12fbb096406013f8a046e89",
-                        "commit whose compiler/pthread matches the SDK's libpthread.a"),
+    "aros_src": ("VECTORCRAFT_AROS_SRC", None, "AROS Git checkout holding aros_src_commit; read-only source of the pthread link library "
+                 "(v11: deadwood2/AROS; aarch64: mainline)"),
+    "aros_src_commit": ("VECTORCRAFT_AROS_SRC_COMMIT", None,
+                        "commit whose compiler/pthread matches the SDK's libpthread.a (default: the target's)"),
+    "pomaros_hosted": ("VECTORCRAFT_POMAROS_HOSTED", None, "pomaros-hosted Git checkout: C bridge of the aarch64 std PAL (aarch64 only)"),
+    "pomaros_hosted_commit": ("VECTORCRAFT_POMAROS_HOSTED_COMMIT", "3bc9359d439f9fb5655cf48924413ffe670931cc",
+                              "pomaros-hosted commit whose hosted/rust bridge the common sysroot's aarch64 PAL was made from"),
     "egui_aros": ("VECTORCRAFT_EGUI_AROS", None, "egui-aros Git checkout; its commit pinned in upstreams.json is built"),
     "egui_upstream_root": ("VECTORCRAFT_EGUI_UPSTREAM_ROOT", None, "read-only prepared egui-aros upstream repositories"),
     "toolchain": ("VECTORCRAFT_TOOLCHAIN", None, "rustup name of the private AROS std toolchain"),
@@ -72,7 +85,10 @@ def load(required=()):
     out["cargo_home"] = out["cargo_home"] or f"deps/{out['target']}/cargo-home"
     out["build_root"] = out["build_root"] or f"build/{out['target']}"
     out["panic"] = out["panic"] or TARGETS[out["target"]]["panic"]
-    paths = ("aros_gcc", "aros_ar", "aros_strip", "aros_sdk", "rust_aros", "aros_src", "egui_aros", "egui_upstream_root", "cargo_home", "build_root")
+    out["aros_src_commit"] = out["aros_src_commit"] or TARGETS[out["target"]].get("aros_src_commit")
+    out["elf"] = TARGETS[out["target"]].get("elf")
+    paths = ("aros_gcc", "aros_ar", "aros_strip", "aros_sdk", "rust_aros", "aros_src", "pomaros_hosted", "egui_aros", "egui_upstream_root",
+             "cargo_home", "build_root")
     for key in paths:
         if out[key] and not os.path.isabs(out[key]):
             base = REPO if os.environ.get(SETTINGS[key][0]) or key not in local else (local_path.parent if local_path else REPO)

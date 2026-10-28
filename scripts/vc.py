@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,14 @@ PTHREAD_DIR = REPO / "patches" / "aros-pthread"
 PTHREAD_CFLAGS = ["-O2", "-mcmodel=large", "-fno-omit-frame-pointer"]
 # The members patches/aros-pthread changes; only these are linked from the private build.
 PTHREAD_PATCHED = ("pthread", "pthread_create")
+# aarch64: the SDK's ThreadInfo layout, read from its libpthread.a disassembly (stride 0x390, task
+# 0x28, detached 0x384) in rust-aros ports/runtime/build-arm-detach.py; the source must agree.
+PTHREAD_LAYOUT_RASPI = {"sizeof(ThreadInfo)": 912, "offsetof(ThreadInfo, finished)": 32,
+                        "offsetof(ThreadInfo, task)": 40, "offsetof(ThreadInfo, detached)": 900}
+# The C bridge the aarch64 std PAL (Jonx's, in the common sysroot) calls; rust-aros
+# tools/build-acceptance.py builds the same seven files.
+GLUE_SOURCES = ("aros_fs_glue", "aros_thread_glue", "aros_sync_glue", "aros_env_glue",
+                "aros_process_glue", "aros_proc_glue", "aros_net_glue")
 WORK = REPO / "work" / "vectorcraft"
 # Test tools built with the same profile: name -> (manifest directory, binary).
 TOOLS = {"file-probe": ("tests/file-probe", "vc-file-probe")}
@@ -365,9 +374,17 @@ def egui_aros_vendor(cfg, root, src):
     return paths, record
 
 
+def tool(cfg, name):
+    """A binutils-style tool beside the compiler driver (x86_64-aros-gcc, aarch64-aros-clang)."""
+    driver = cfg["aros_gcc"]
+    for suffix in ("-gcc", "-clang"):
+        if driver.endswith(suffix):
+            return driver[: -len(suffix)] + "-" + name
+    raise Failure(f"cannot derive {name} from the compiler driver {driver}")
+
+
 def objdump_key(cfg, obj):
-    tool = cfg["aros_gcc"].replace("-gcc", "-objdump")
-    text = run([tool, "-d", "-r", "--no-show-raw-insn", obj]).stdout.decode().split("\n", 4)[-1]
+    text = run([tool(cfg, "objdump"), "-d", "-r", "--no-show-raw-insn", obj]).stdout.decode().split("\n", 4)[-1]
     return hashlib.sha256(text.encode()).hexdigest()
 
 
@@ -430,12 +447,87 @@ def build_pthread(cfg, root):
     return out, record
 
 
+def defined_symbols(cfg, obj):
+    lines = run([tool(cfg, "nm"), "--defined-only", "--extern-only", obj]).stdout.decode().splitlines()
+    return sorted(line.split()[-1] for line in lines if line.strip())
+
+
+def build_pthread_raspi(cfg, root):
+    """The two pthread members patches/aros-pthread changes, rebuilt for the native Pi SDK from
+    mainline compiler/pthread at the target's commit, as rust-aros's ARM runtime work did
+    (ports/runtime/build-arm-detach.py --fixed, same patch). That work showed the bug in the SDK's
+    library on rpi-1 and the corrected objects passing. Clang does not rebuild the SDK's objects
+    instruction for instruction (not claimed); instead the source's ThreadInfo layout is asserted
+    against the SDK's, and the objects must define every symbol of the SDK members they replace."""
+    patches = [PTHREAD_DIR / n for n in (PTHREAD_DIR / "series").read_text().split()]
+    commit = cfg["aros_src_commit"]
+    key = hashlib.sha256(b"".join(bytes.fromhex(sha256_file(p)) for p in patches)).hexdigest()[:8]
+    out = root / f"aros-pthread-{commit[:12]}-{key}"
+    if (out / "pthread.json").exists():
+        return out, json.loads((out / "pthread.json").read_text())
+    archive = run(["git", "-C", cfg["aros_src"], "archive", "--format=tar", commit, "compiler/pthread"]).stdout
+    cc, sdk_lib = cfg["aros_gcc"], Path(cfg["aros_sdk"]) / "lib" / "libpthread.a"
+    with tempfile.TemporaryDirectory(prefix="pthread-", dir=root) as tmp:
+        tmp = Path(tmp)
+        with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
+            tar.extractall(tmp, filter="data")
+        src = tmp / "compiler/pthread"
+        layout = "#include \"pthread_intern.h\"\n#include <stddef.h>\n" + "".join(
+            f'_Static_assert({expr} == {value}, "Pi SDK layout: {expr}");\n' for expr, value in PTHREAD_LAYOUT_RASPI.items())
+        (tmp / "layout.c").write_text(layout)
+        run([cc, f"--sysroot={cfg['aros_sdk']}", "-O2", "-I", src, "-c", tmp / "layout.c", "-o", tmp / "layout.o"])
+        sdk_objs = tmp / "sdk"
+        sdk_objs.mkdir()
+        run([cfg["aros_ar"], "x", sdk_lib, *[f"{n}.o" for n in PTHREAD_PATCHED]], cwd=sdk_objs)
+        for patch in patches:
+            run(["patch", "--quiet", "-p3", "-i", patch], cwd=src)
+        staged = tmp / "out"
+        staged.mkdir()
+        for name in PTHREAD_PATCHED:
+            run([cc, f"--sysroot={cfg['aros_sdk']}", "-O2", "-c", src / f"{name}.c", "-o", staged / f"{name}.o"])
+            missing = sorted(set(defined_symbols(cfg, sdk_objs / f"{name}.o")) - set(defined_symbols(cfg, staged / f"{name}.o")))
+            if missing:
+                raise Failure(f"rebuilt {name}.o lacks symbols of the SDK's member, so -lpthread would still pull it: {missing}")
+        record = {"aros_src_commit": commit, "patches": {p.name: sha256_file(p) for p in patches},
+                  "cflags": ["-O2"], "layout_asserted": PTHREAD_LAYOUT_RASPI, "unpatched_matches_sdk": "not claimed (Clang)",
+                  "sdk_archive_sha256": sha256_file(sdk_lib),
+                  "objects": {f"{n}.o": sha256_file(staged / f"{n}.o") for n in PTHREAD_PATCHED}}
+        (staged / "pthread.json").write_text(json.dumps(record, indent=2) + "\n")
+        staged.rename(out)
+    return out, record
+
+
+def build_glue(cfg, root):
+    """Jonx's C bridge for the aarch64 std PAL, from a clean pomaros-hosted checkout at the pinned
+    commit, compiled with this build's compiler and SDK."""
+    checkout, commit = Path(cfg["pomaros_hosted"]), cfg["pomaros_hosted_commit"]
+    if git(checkout, "rev-parse", "HEAD") != commit or git(checkout, "status", "--porcelain"):
+        raise Failure(f"{checkout} must be a clean checkout of {commit}")
+    out = root / f"aros-glue-{commit[:12]}"
+    if (out / "glue.json").exists():
+        return out, json.loads((out / "glue.json").read_text())
+    with tempfile.TemporaryDirectory(prefix="glue-", dir=root) as tmp:
+        staged = Path(tmp) / "out"
+        staged.mkdir()
+        for name in GLUE_SOURCES:
+            run([cfg["aros_gcc"], f"--sysroot={cfg['aros_sdk']}", "-O2", "-c", checkout / "hosted/rust" / f"{name}.c", "-o", staged / f"{name}.o"])
+        record = {"pomaros_hosted_commit": commit, "cflags": ["-O2"],
+                  "sources": {f"{n}.c": sha256_file(checkout / "hosted/rust" / f"{n}.c") for n in GLUE_SOURCES},
+                  "objects": {f"{n}.o": sha256_file(staged / f"{n}.o") for n in GLUE_SOURCES}}
+        (staged / "glue.json").write_text(json.dumps(record, indent=2) + "\n")
+        staged.rename(out)
+    return out, record
+
+
 def cmd_build(args):
     cmd_verify(args)
     cfg = vcconfig.load(["aros_gcc", "aros_ar", "aros_sdk", "rust_aros", "toolchain", "cargo_home", "build_root"])
     v11 = cfg["profile"] == "v11"
-    if v11 and not cfg.get("aros_src"):
-        raise Failure("aros_src is required for x86_64 ABIv11 (pthread link library); see `vc.py config`")
+    raspi = cfg["profile"] == "aarch64-v1-raspi"
+    if (v11 or raspi) and not cfg.get("aros_src"):
+        raise Failure(f"aros_src is required for {cfg['target']} (pthread link library); see `vc.py config`")
+    if raspi and not cfg.get("pomaros_hosted"):
+        raise Failure("pomaros_hosted is required for aarch64 (C bridge of the std PAL); see `vc.py config`")
     for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_TARGET_DIR",
                  "CARGO_PROFILE_RELEASE_PANIC"):
         if os.environ.get(name):
@@ -458,7 +550,16 @@ def cmd_build(args):
     libc_patches = [LIBC_DIR / n for n in (LIBC_DIR / "series").read_text().split()]
     libc_key = hashlib.sha256(b"".join(bytes.fromhex(sha256_file(p)) for p in libc_patches)).hexdigest()[:8]
     libc = root / f"libc-aros-{commit[:12]}-{libc_key}"
-    if not libc.exists():
+    sysroot = Path(run(["rustc", "+" + cfg["toolchain"], "--print", "sysroot"]).stdout.decode().strip())
+    if raspi:
+        # std's libc on aarch64 is the common sysroot's adapted copy: no bindings, no C glue (the
+        # PAL uses Jonx's bridge instead). Packages depending on libc must get the same crate.
+        libc = sysroot / "lib/rustlib/src/rust/library/libc-aros"
+        if 'Ok("aarch64") { return; }' not in (libc / "build.rs").read_text():
+            raise Failure(f"{libc} is not the common sysroot's aarch64 adaptation")
+        if libc_patches:
+            raise Failure("patches/libc-aros applies to rust-aros's libc-aros, which aarch64 does not build")
+    elif not libc.exists():
         archive = run(["git", "-C", rust_aros, "archive", "--format=tar", commit, "std-groundwork/libc-aros"]).stdout
         with tempfile.TemporaryDirectory(prefix="libc-", dir=root) as tmp:
             with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
@@ -473,6 +574,27 @@ def cmd_build(args):
         target_text = (template.replace("@AROS_GCC@", cfg["aros_gcc"]).replace("@AROS_SDK@", cfg["aros_sdk"])
                        .replace("@AROS_EXTRA_LIBS@", ""))
         target_data = json.loads(target_text)
+    elif raspi:
+        target_data = json.loads(run(["git", "-C", rust_aros, "show", f"{commit}:profiles/{cfg['profile']}.json"]).stdout)
+        glue_dir, glue = build_glue(cfg, root)
+        pthread_dir, pthread = build_pthread_raspi(cfg, root)
+        # Cargo's ELF section GC drops the generated main and lang_start (CLAUDE.md, "Ordinary Rust
+        # Cargo main on native ARM AROS"): the linker is the driver with -Wl,--no-gc-sections after
+        # Cargo's arguments, as in rust-aros tools/build-cargo-main.py. Not -Clink-dead-code.
+        linker = root / "aarch64-aros-linker"
+        linker_text = '#!/bin/sh\nset -e\nexec ' + shlex.quote(cfg["aros_gcc"]) + ' "$@" -Wl,--no-gc-sections\n'
+        if not linker.exists() or linker.read_text() != linker_text:
+            linker.write_text(linker_text)
+        linker.chmod(0o755)
+        target_data["linker"] = str(linker)
+        target_data["no-default-libraries"] = False
+        # The bridge and the corrected pthread members precede the SDK's -lpthread, which then
+        # pulls neither replaced member.
+        target_data["pre-link-args"] = {"gnu-cc": [f"--sysroot={cfg['aros_sdk']}"] +
+                                        [str(glue_dir / f"{n}.o") for n in GLUE_SOURCES] +
+                                        [str(pthread_dir / f"{n}.o") for n in PTHREAD_PATCHED]}
+        target_data["late-link-args"] = {"gnu-cc": ["-lpthread"]}
+        target_json = root / f"{cfg['profile']}.json"
     else:
         # rust-aros keeps the mainline profile without machine paths; the linker, the SDK and
         # the pthread library are this build's.
@@ -492,7 +614,12 @@ def cmd_build(args):
     else:
         egui_aros, egui_aros_record = {}, None
     # Mainline's pthread already frees the slot of a thread detached after it finished (c31d3294).
-    pthread_dir, pthread = build_pthread(cfg, root) if v11 else (None, None)
+    if v11:
+        pthread_dir, pthread = build_pthread(cfg, root)
+    elif raspi:
+        pthread_dir = None  # linked through the target's pre-link arguments (above)
+    else:
+        pthread_dir, pthread = None, None
 
     # getrandom has no AROS backend; vectorcraft-aros-entropy supplies the custom one.
     # The build root first: patched crates and the egui-aros vendor tree live under it, and their
@@ -501,7 +628,7 @@ def cmd_build(args):
     flags = ["-Cpanic=" + cfg["panic"], "--cfg", 'getrandom_backend="custom"', f"--remap-path-prefix={root}=/build",
              f"--remap-path-prefix={src}=/vectorcraft",
              f"--remap-path-prefix={cfg['cargo_home']}=/cargo", f"--remap-path-prefix={libc}=/libc-aros",
-             f"--remap-path-prefix={run(['rustc', '+' + cfg['toolchain'], '--print', 'sysroot']).stdout.decode().strip()}=/rust"]
+             f"--remap-path-prefix={sysroot}=/rust"]
     if cfg["panic"] == "unwind":
         flags.append("-Cforce-unwind-tables=yes")
     # The AROS GCC driver searches the SDK's lib/ before any -L given to it, so a patched
@@ -567,10 +694,12 @@ def cmd_build(args):
         "upstreams": upstreams(),
         "series": {n: sha256_file(SERIES_DIR / n) for n in series()},
         "crates": crates,
-        "libc_aros": {"rust_aros_commit": commit, "patches": {p.name: sha256_file(p) for p in libc_patches},
-                      "tree_sha256": tree_hash(libc)},
+        "libc_aros": ({"source": "common sysroot (aarch64 adaptation)", "path": str(libc), "tree_sha256": tree_hash(libc)} if raspi else
+                      {"rust_aros_commit": commit, "patches": {p.name: sha256_file(p) for p in libc_patches},
+                       "tree_sha256": tree_hash(libc)}),
         "target_json_sha256": sha256_file(target_json),
         "pthread": pthread,
+        "glue": glue if raspi else None,
         "egui_aros": egui_aros_record,
         "toolchain": {"std_source_sha256": tree_hash(Path(run(["rustc", "+" + cfg["toolchain"], "--print", "sysroot"]).stdout.decode().strip()) / "lib/rustlib/src/rust"),
                       "gcc_sha256": sha256_file(cfg["aros_gcc"]),
@@ -602,11 +731,22 @@ def cmd_build(args):
         path = release / name
         if path.exists():
             shutil.copy2(path, out / name)
-            undefined = run([cfg["aros_gcc"].replace("-gcc", "-nm"), "-u", out / name]).stdout.decode().split()
+            undefined = run([tool(cfg, "nm"), "-u", out / name]).stdout.decode().split()
             binaries[name] = {"sha256": sha256_file(out / name), "bytes": (out / name).stat().st_size,
                               "undefined_symbols": undefined}
             if undefined:
                 raise Failure(f"{name} has undefined symbols (collect-aros did not catch them): {undefined[:8]}")
+            if cfg["elf"]:
+                # ELF64 LSB, OSABI AROS, the target's ABI version, ET_REL, the target's machine; a
+                # defined main (section GC once removed it with no link error).
+                head_bytes = (out / name).read_bytes()[:20]
+                abi, machine = cfg["elf"]
+                if (head_bytes[:8] != bytes.fromhex("7f454c460201010f") or head_bytes[8] != abi
+                        or int.from_bytes(head_bytes[16:18], "little") != 1 or int.from_bytes(head_bytes[18:20], "little") != machine):
+                    raise Failure(f"{name} is not an AROS ELF64 relocatable for {cfg['target']}")
+                if not any(line.split()[-2:] == ["T", "main"] for line in run([tool(cfg, "nm"), out / name]).stdout.decode().splitlines()):
+                    raise Failure(f"{name} defines no main")
+                binaries[name]["elf_checked"] = {"abi_version": abi, "machine": machine, "type": "ET_REL", "main": "defined"}
     if not binaries:
         manifest["status"] = "failed"
         (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
