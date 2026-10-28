@@ -1,33 +1,50 @@
 #!/usr/bin/env python3
-"""Package one `vc.py build` output as the release archive described in packaging/release.json.
+"""Package `vc.py build` outputs as the release archives described in packaging/release.json.
 
-    package.py BUILD_OUTPUT [--dist DIR]
+    package.py binary BUILD_OUTPUT [--dist DIR]
+    package.py source BUILD_OUTPUT [BUILD_OUTPUT ...] [--dist DIR]
 
-Writes, into DIR (default: dist/ of this repository), the binary archive, the source archive
-(this repository at HEAD: pins, patches, scripts, recipe), the release notes and SHA256SUMS.
-Refuses to replace a file that is already there, a build that is not from a clean, committed
-work copy, a build made with other features, binaries whose bytes differ from the build
-manifest, and a repository whose patch series is not the one the build used.
+`binary` writes VectorCraft-<version>-<target>.zip for the build's target (read from its
+manifest). `source` writes VectorCraft-<version>-source.zip: this repository at HEAD (pins,
+patches, scripts, recipe) plus the pinned inputs every named build used. Both append to
+DIR/SHA256SUMS (default DIR: dist/ of this repository, flat; the target is in the file name).
 
-The binary archive is a ZIP that unpacks to one drawer and its icon:
+The configuration of a build's target is the local file (VECTORCRAFT_LOCAL, local.json,
+local.*.json) whose `target` is that target; local.json without a `target` is
+aros-x86_64-abiv11-pc, as in vcconfig. Exactly one must match.
 
-    VectorCraft.info              drawer icon
-    VectorCraft/VectorCraft        the editor (Workbench icon VectorCraft.info, with its stack)
-    VectorCraft/vectorcraft-cli    command line and MCP server
-    VectorCraft/README.md         installation and use
-    VectorCraft/SOURCE.txt        what the binaries were built from
-    VectorCraft/Licenses/...      VectorCraft's licenses and notices, AROS-NOTICE.txt and
-                                 THIRD-PARTY.txt (every crate linked into the binaries)
+Refuses to replace a file that is already there or listed in SHA256SUMS, a build that is not
+from a clean, committed work copy, a build with another LTO/panic/feature profile than the
+target's in release.json, binaries whose bytes differ from the build manifest or that have
+undefined symbols, and a repository whose patch series is not the one the build used.
 
-Entries are sorted, dated with the repository's HEAD commit time and carry Unix modes (0755
-for the programs), so the same inputs give the same bytes.
+The binary archive unpacks to one drawer and its icon:
+
+    VectorCraft.info                drawer icon
+    VectorCraft/VectorCraft         the editor, stripped (--strip-unneeded --remove-section .comment)
+    VectorCraft/VectorCraft.info    its tool icon: stack and ToolTypes from release.json
+    VectorCraft/vectorcraft-cli     command-line program, stripped the same way
+    VectorCraft/ReadMe.txt          installation and use (packaging/ReadMe.txt for the target)
+    VectorCraft/BUILD.txt           what the binaries were built from, and their hashes
+    VectorCraft/Licenses/...        VectorCraft's licences and notices, AROS-NOTICE.txt,
+                                    AROS-LICENSE.txt, THIRD-PARTY.txt (every crate linked in)
+                                    and the Rust standard library's licence texts
+
+Entries are sorted, dated with the repository's HEAD commit time and carry Unix modes (0755 for
+the programs), so the same inputs give the same bytes. The unstripped binaries stay where the
+build put them (build/<target>/out/<id>/); BUILD.txt records the hashes of both forms.
 """
 import argparse
+import contextlib
 import hashlib
+import io
 import json
+import lzma
+import os
 import re
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import tomllib
@@ -35,12 +52,18 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import icons  # noqa: E402
 import vcconfig  # noqa: E402
 
 REPO = vcconfig.REPO
 WORK = REPO / "work" / "vectorcraft"
 PACKAGING = REPO / "packaging"
 LICENSE_NAMES = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|COPYRIGHT|UNLICENSE)", re.I)
+BINARIES = ("VectorCraft", "vectorcraft-cli")
+# apkg 0.6 accepts one file of up to 128 MiB unpacked.
+MEMBER_LIMIT = 128 << 20
+# Classic FFS volumes take names of up to 30 characters.
+NAME_LIMIT = 30
 
 
 class Failure(Exception):
@@ -55,20 +78,81 @@ def git(*args, cwd=REPO):
     return subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True).stdout
 
 
+def run(cmd, **kw):
+    return subprocess.run([str(c) for c in cmd], check=True, capture_output=True, **kw).stdout
+
+
+@contextlib.contextmanager
+def target_env(path):
+    old = os.environ.get("VECTORCRAFT_LOCAL")
+    os.environ["VECTORCRAFT_LOCAL"] = str(path)
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("VECTORCRAFT_LOCAL")
+        else:
+            os.environ["VECTORCRAFT_LOCAL"] = old
+
+
+def config_for(target):
+    """The resolved configuration of `target`, from the one local file that names it."""
+    candidates = []
+    if os.environ.get("VECTORCRAFT_LOCAL"):
+        candidates.append(Path(os.environ["VECTORCRAFT_LOCAL"]))
+    candidates += [REPO / "local.json", *sorted(REPO.glob("local.*.json"))]
+    default = vcconfig.SETTINGS["target"][1]
+    matches = []
+    for path in dict.fromkeys(p.resolve() for p in candidates):
+        if not path.is_file() or path.name.endswith(".example.json"):
+            continue
+        if json.loads(path.read_text()).get("target", default) == target:
+            matches.append(path)
+    if len(matches) != 1:
+        raise Failure(f"need exactly one local file for {target}, found {[str(m) for m in matches]}")
+    with target_env(matches[0]):
+        cfg = vcconfig.load(["aros_gcc", "aros_strip", "aros_sdk", "rust_aros", "toolchain", "cargo_home"])
+    if cfg["target"] != target:
+        raise Failure(f"{matches[0]} resolves to {cfg['target']}, not {target} (environment overrides?)")
+    return cfg
+
+
+def tool(cfg, name):
+    driver = cfg["aros_gcc"]
+    for suffix in ("-gcc", "-clang"):
+        if driver.endswith(suffix):
+            return driver[: -len(suffix)] + "-" + name
+    raise Failure(f"cannot derive {name} from {driver}")
+
+
+def head_clean():
+    if git("status", "--porcelain").strip():
+        raise Failure("commit this repository first: archives record and contain HEAD")
+    return git("rev-parse", "HEAD").decode().strip()
+
+
 def check_build(build, release):
     manifest = json.loads((build / "manifest.json").read_text())
+    target = manifest.get("target")
+    spec = release["targets"].get(target)
+    if not spec:
+        raise Failure(f"{build}: target {target!r} has no section in release.json")
     if manifest.get("status") not in ("built-not-run", "accepted"):
         raise Failure(f"{build}: build status is {manifest.get('status')!r}, not a finished build")
     if manifest["work_dirty"] or manifest["source"] != "committed HEAD":
         raise Failure(f"{build}: built from a dirty or uncommitted work copy")
     command = manifest["command"]
-    features = release["build"]["features"]
-    if not any(command[i:i + len(features)] == features for i in range(len(command))):
-        raise Failure(f"{build}: not built with {' '.join(features)}")
-    if release["build"].get("lto") == "fat" and 'profile.release.lto="fat"' not in command:
-        raise Failure(f"{build}: not built with --lto fat")
-    if manifest["toolchain"]["panic"] != release["build"]["panic"] or manifest["abi"] != release["build"]["abi"]:
-        raise Failure(f"{build}: profile {manifest['abi']} / panic={manifest['toolchain']['panic']} is not the release profile")
+    profile = spec["build"]
+    lto = 'profile.release.lto="fat"' in command
+    if lto != (profile["lto"] == "fat"):
+        raise Failure(f"{build}: LTO {'fat' if lto else 'off'}, release.json wants {profile['lto'] or 'off'}")
+    if manifest["toolchain"]["panic"] != profile["panic"]:
+        raise Failure(f"{build}: panic={manifest['toolchain']['panic']}, release.json wants {profile['panic']}")
+    features = [command[i + 1] for i, c in enumerate(command) if c == "--features"]
+    if sorted(features) != sorted(profile["features"]) or "--no-default-features" in command:
+        raise Failure(f"{build}: features {features} are not the release profile {profile['features']}")
+    if sorted(manifest.get("binaries", {})) != sorted(BINARIES):
+        raise Failure(f"{build}: holds {sorted(manifest.get('binaries', {}))}, need both {list(BINARIES)}")
     if "linked_packages" not in manifest:
         raise Failure(f"{build}: the manifest has no linked_packages (rebuild with the current vc.py)")
     for name, info in manifest["binaries"].items():
@@ -78,88 +162,88 @@ def check_build(build, release):
     current = {n: sha256((series_dir / n).read_bytes()) for n in (series_dir / "series").read_text().split()}
     if current != manifest["series"]:
         raise Failure("patches/vectorcraft is not the series this build used")
-    if git("status", "--porcelain").strip():
-        raise Failure("commit this repository first: the source archive is made from HEAD")
+    if manifest["upstreams"] != json.loads((REPO / "upstreams.json").read_text())["repositories"]:
+        raise Failure("upstreams.json differs from the pins this build used")
     version = tomllib.loads((WORK / "Cargo.toml").read_text())["workspace"]["package"]["version"]
     if version != release["version"]:
         raise Failure(f"work copy version {version} is not the release version {release['version']}")
-    return manifest
+    if git("rev-parse", "HEAD", cwd=WORK).decode().strip() != manifest["work_head"]:
+        raise Failure(f"work/vectorcraft is not at the build's commit {manifest['work_head']} (notices are read from it)")
+    return manifest, spec
 
 
-# apkg 0.6 accepts one file of up to 128 MiB unpacked (64 MiB before 0.6).
-MEMBER_LIMIT = 128 << 20
-
-
-def stripped(data, name):
+def stripped(cfg, data, name):
     """The program with unneeded symbols and .comment removed: the form verified to load on AROS
     (a full strip loses the relocations AROS applies at load time)."""
-    cfg = vcconfig.load(["aros_strip"])
     with tempfile.TemporaryDirectory() as tmp:
         src, dst = Path(tmp) / "in", Path(tmp) / "out"
         src.write_bytes(data)
-        subprocess.run([cfg["aros_strip"], "--strip-unneeded", "--remove-section", ".comment", "-o", str(dst), str(src)], check=True)
+        run([cfg["aros_strip"], "--strip-unneeded", "--remove-section", ".comment", "-o", dst, src])
+        undefined = run([tool(cfg, "nm"), "-u", dst]).decode().split()
+        if undefined:
+            raise Failure(f"{name} has undefined symbols after stripping: {undefined[:8]}")
         out = dst.read_bytes()
     if len(out) > MEMBER_LIMIT:
         raise Failure(f"{name} is {len(out)} bytes after stripping, over apkg's 128 MiB limit for one file")
     return out
 
 
-def third_party(manifest):
-    """Every package linked into the binaries, except VectorCraft's own (covered by its license),
-    with its license expression and license files."""
+def third_party(manifest, build_root):
+    """Every package linked into the binaries, except VectorCraft's own (covered by its licence),
+    with its licence expression and licence files."""
     parts = ["Third-party Rust packages linked into VectorCraft and vectorcraft-cli",
              "=" * 68, "",
+             f"Target: {manifest['target']}.",
              "Built with the Rust standard library and these packages. Each entry gives the",
              "package, its version, its declared license and the license files it ships.", ""]
-    own = str(WORK.resolve())
+    own = [str(WORK.resolve()), str((build_root / "src").resolve())]
     entries = []
     for package_id, manifest_path in manifest["linked_packages"].items():
         crate_dir = Path(manifest_path).parent
         meta = tomllib.loads(Path(manifest_path).read_text()).get("package", {})
         name, version = meta.get("name", "?"), meta.get("version", "?")
         if isinstance(version, dict) or isinstance(meta.get("license"), dict):
-            # workspace-inherited fields: a member of a workspace (the Rust library or VectorCraft)
             root = crate_dir
             while root != root.parent and not ((root / "Cargo.toml").exists() and "workspace" in tomllib.loads((root / "Cargo.toml").read_text())):
                 root = root.parent
             ws = tomllib.loads((root / "Cargo.toml").read_text()).get("workspace", {}).get("package", {})
             version = ws.get("version", "?") if isinstance(version, dict) else version
             meta = {**meta, "license": ws.get("license", meta.get("license"))}
-        if str(crate_dir.resolve()).startswith(own) or "/build/v11/src/" in str(crate_dir):
+        if any(str(crate_dir.resolve()).startswith(o) for o in own):
             continue
         license_expr = meta.get("license") or ("see " + meta["license-file"] if meta.get("license-file") else "not declared")
         files = sorted(p for p in crate_dir.iterdir() if p.is_file() and LICENSE_NAMES.match(p.name))
         if not files and "/lib/rustlib/src/rust/" in str(crate_dir):
-            # The standard library's crates carry no license files; the Rust tree's root has them.
+            # The standard library's crates carry no licence files; the Rust tree's root has them.
             rust = Path(str(crate_dir).split("/lib/rustlib/src/rust/")[0] + "/lib/rustlib/src/rust")
             files = sorted(p for p in rust.iterdir() if p.is_file() and LICENSE_NAMES.match(p.name))
             license_expr = license_expr if license_expr != "not declared" else "MIT OR Apache-2.0 (the Rust project)"
-        entries.append((name, version, license_expr, files, package_id))
-    entries.sort()
-    for name, version, license_expr, files, package_id in entries:
+        entries.append((name, version, license_expr, files))
+    entries.sort(key=lambda e: (e[0], e[1]))
+    for name, version, license_expr, files in entries:
         parts += ["-" * 68, f"{name} {version}", f"License: {license_expr}", ""]
         for f in files:
             parts += [f"--- {f.name} ---", f.read_text(errors="replace").rstrip(), ""]
         if not files:
             parts += ["(the package ships no separate license file)", ""]
-    vendored = Path(manifest["linked_packages"].get(next((k for k in manifest["linked_packages"] if "#libc@" in k), ""), "")).parent
-    for rel in ["csrc/vendor/jitterentropy/LICENSE.bsd", "csrc/vendor/arospkg-entropy/LICENSE"]:
-        path = vendored / rel
-        if path.is_file():
-            parts += ["-" * 68, f"libc-aros: {rel}", "", path.read_text(errors="replace").rstrip(), ""]
-    return "\n".join(parts) + "\n", [(n, v, l) for n, v, l, _, _ in entries]
+    libc_id = next((k for k in manifest["linked_packages"] if "#libc@" in k), None)
+    if libc_id:
+        vendored = Path(manifest["linked_packages"][libc_id]).parent
+        for rel in ["csrc/vendor/jitterentropy/LICENSE.bsd", "csrc/vendor/arospkg-entropy/LICENSE"]:
+            path = vendored / rel
+            if path.is_file():
+                parts += ["-" * 68, f"libc-aros: {rel}", "", path.read_text(errors="replace").rstrip(), ""]
+    return "\n".join(parts) + "\n", len(entries)
 
 
-def rust_docs(manifest):
-    """The Rust toolchain's own license notices for its standard library (share/doc/rust of the
-    rustc the build used, which must report the build's version)."""
-    cfg = vcconfig.load(["toolchain"])
-    wrapper = Path(subprocess.run(["rustup", "which", "rustc", "--toolchain", cfg["toolchain"]], check=True,
-                                  capture_output=True, text=True).stdout.strip())
-    # The private toolchain's rustc is a script that runs the host nightly's rustc on its sysroot.
+def rust_docs(cfg, manifest):
+    """The Rust toolchain's licence notices for its standard library (share/doc/rust of the rustc
+    the build used, which must report the build's version)."""
+    wrapper = Path(run(["rustup", "which", "rustc", "--toolchain", cfg["toolchain"]], text=True).strip())
+    # A private toolchain's rustc is a script that runs the host nightly's rustc on its sysroot.
     found = re.search(r"exec (\S+/bin/rustc)", wrapper.read_text(errors="replace")) if wrapper.stat().st_size < 4096 else None
     rustc = Path(found.group(1)) if found else wrapper
-    version = subprocess.run([rustc, "-V"], check=True, capture_output=True, text=True).stdout.strip()
+    version = run([rustc, "-V"], text=True).strip()
     if version != manifest["toolchain"]["rustc"]:
         raise Failure(f"{rustc} reports {version!r}, not the build's {manifest['toolchain']['rustc']!r}")
     doc = rustc.parent.parent / "share" / "doc" / "rust"
@@ -169,24 +253,66 @@ def rust_docs(manifest):
     return out
 
 
-def source_txt(release, manifest, archive_names, packaged=None):
+def build_txt(release, spec, manifest, repo_head, packaged):
     up = manifest["upstreams"]
-    lines = [release["title"], "", "Built from:",
-             f"  VectorCraft {up['vectorcraft']['url']} at {up['vectorcraft']['commit']}",
-             f"  with the {len(manifest['series'])} patches in patches/vectorcraft/series of the source archive",
-             f"  rust-aros libc-aros at {manifest['libc_aros']['rust_aros_commit']}",
-             f"  AROS compiler/pthread at {manifest['pthread']['aros_src_commit'] if 'aros_src_commit' in manifest['pthread'] else manifest['pthread']}",
-             f"  Rust {manifest['toolchain']['rustc']}",
-             f"  {manifest['toolchain']['gcc']}, x86_64 ABIv11 SDK",
-             "", "Source archive: " + archive_names["source"],
-             "Rebuild: see docs/development.md in the source archive.",
-             "", "SHA-256 of the programs:"]
-    for name, info in sorted(manifest["binaries"].items()):
-        lines.append(f"  {info['sha256']}  {name}")
-    if packaged:
-        lines += ["", "As packaged (strip --strip-unneeded --remove-section .comment):"]
-        lines += [f"  {sha}  {name}" for name, sha in sorted(packaged.items())]
+    tc = manifest["toolchain"]
+    lines = [f"VectorCraft {release['version']} for AROS", "",
+             f"Target:        {manifest['target']}",
+             f"System:        {spec['system']}",
+             f"Version:       {release['upstream_version']}",
+             f"Build id:      {manifest['build_id']}",
+             f"Built:         {manifest['date']}",
+             "",
+             "Sources",
+             f"  VectorCraft         {up['vectorcraft']['url']} at {up['vectorcraft']['commit']}",
+             f"  Port repository     commit {repo_head} (source archive {release['source_archive']})",
+             f"  Port work copy      commit {manifest['work_head']}",
+             "  Patch series        patches/vectorcraft/series (SHA-256):"]
+    lines += [f"    {h}  {n}" for n, h in manifest["series"].items()]
+    lines += [f"  egui-aros           {up['egui-aros']['url']} at {up['egui-aros']['commit']}",
+              f"  egui (storytold)    {up['storytold-egui']['url']} at {up['storytold-egui']['commit']}",
+              f"  winit (storytold)   {up['storytold-winit']['url']} at {up['storytold-winit']['commit']}"]
+    libc = manifest["libc_aros"]
+    if "rust_aros_commit" in libc:
+        lines.append(f"  rust-aros           libc-aros at {libc['rust_aros_commit']}")
+    else:
+        lines.append(f"  libc-aros           {libc['source']}, tree sha256 {libc['tree_sha256']}")
+    pthread = manifest.get("pthread")
+    if pthread:
+        lines.append(f"  AROS pthread        compiler/pthread at {pthread['aros_src_commit']}, patches/aros-pthread applied")
+    else:
+        lines.append("  AROS pthread        the SDK's libpthread.a, unchanged")
+    if manifest.get("glue"):
+        lines.append(f"  Rust std C bridge   pomaros-hosted hosted/rust at {manifest['glue']['pomaros_hosted_commit']}")
+    lines += ["  Patched crates:"]
+    lines += [f"    {c['package']} {c['version']}  tree {c['tree_sha256']}" for c in manifest["crates"].values()]
+    lines += ["",
+              "Toolchain",
+              f"  Rust        {tc['rustc']} ({tc['name']})",
+              f"              std source tree sha256 {tc['std_source_sha256']}",
+              f"  C compiler  {tc['gcc']}",
+              f"  SDK         {spec['sdk']}",
+              f"              tree sha256 {tc['sdk_sha256']}",
+              f"  Profile     release, panic={tc['panic']}, LTO {spec['build']['lto'] or 'off'}, linked with -nix",
+              "",
+              "Programs (SHA-256)",
+              "  as built (unstripped):"]
+    lines += [f"    {info['sha256']}  {name}  ({info['bytes']} bytes)" for name, info in sorted(manifest["binaries"].items())]
+    lines += ["  as packaged (strip --strip-unneeded --remove-section .comment):"]
+    lines += [f"    {sha256(data)}  {name}  ({len(data)} bytes)" for name, data in sorted(packaged.items())]
+    lines += ["", "Rebuild: docs/development.md in the source archive."]
     return "\n".join(lines) + "\n"
+
+
+def readme(release, spec):
+    text = (PACKAGING / "ReadMe.txt").read_text()
+    for key, value in (("@VERSION@", release["version"]), ("@UPSTREAM_VERSION@", release["upstream_version"]),
+                       ("@SYSTEM@", spec["system"])):
+        text = text.replace(key, value)
+    leftover = re.findall(r"@[A-Z_]+@", text)
+    if leftover:
+        raise Failure(f"packaging/ReadMe.txt has unknown placeholders {leftover}")
+    return text.encode()
 
 
 def zip_entry(z, name, data, mode, date):
@@ -197,137 +323,163 @@ def zip_entry(z, name, data, mode, date):
     z.writestr(info, data, compresslevel=9)
 
 
+def write_zip(path, files, date):
+    partial = path.with_name(path.name + ".partial")
+    with zipfile.ZipFile(partial, "x") as z:
+        dirs = sorted({"/".join(n.split("/")[:i]) for n in files for i in range(1, n.count("/") + 1)})
+        for d in dirs:
+            zip_entry(z, d + "/", b"", 0o40755, date)
+        for n in sorted(files):
+            zip_entry(z, n, files[n][0], files[n][1], date)
+    partial.rename(path)
+
+
+class Dist:
+    def __init__(self, path):
+        self.path = path
+        self.sums = path / "SHA256SUMS"
+
+    def claim(self, name):
+        listed = {line.split()[-1] for line in self.sums.read_text().splitlines() if line.strip()} if self.sums.exists() else set()
+        if (self.path / name).exists() or (self.path / (name + ".partial")).exists() or name in listed:
+            raise Failure(f"{self.path / name} exists or is listed in SHA256SUMS; a delivered file is never replaced")
+        self.path.mkdir(parents=True, exist_ok=True)
+
+    def record(self, name):
+        digest = sha256((self.path / name).read_bytes())
+        existing = self.sums.read_text().splitlines() if self.sums.exists() else []
+        self.sums.write_text("\n".join([*existing, f"{digest}  {name}"]) + "\n")
+        return digest
+
+
+def cmd_binary(a, release):
+    if len(a.build) != 1:
+        raise Failure("binary takes one build output")
+    build = a.build[0].resolve()
+    manifest, spec = check_build(build, release)
+    target = manifest["target"]
+    cfg = config_for(target)
+    repo_head = head_clean()
+    dist = Dist(a.dist)
+    name = f"{release['name']}-{release['version']}-{target}.zip"
+    dist.claim(name)
+    date = time.gmtime(int(git("log", "-1", "--format=%ct").decode().strip()))[:6]
+    drawer = release["drawer"]
+    files = {}
+    packaged = {}
+    for binary in BINARIES:
+        undefined = run([tool(cfg, "nm"), "-u", build / binary]).decode().split()
+        if undefined:
+            raise Failure(f"{binary} has undefined symbols: {undefined[:8]}")
+        packaged[binary] = stripped(cfg, (build / binary).read_bytes(), binary)
+        files[f"{drawer}/{binary}"] = (packaged[binary], 0o100755)
+    source = WORK / release["icon_source"].removeprefix("work:")
+    w, h, rows = icons.decode_rgba(source)
+    files[f"{drawer}.info"] = (icons.icon(w, h, rows, icons.ICON_DRAWER, release["stack"]), 0o100644)
+    files[f"{drawer}/{drawer}.info"] = (icons.icon(w, h, rows, icons.ICON_TOOL, release["stack"], release["tooltypes"]), 0o100644)
+    files[f"{drawer}/ReadMe.txt"] = (readme(release, spec), 0o100644)
+    files[f"{drawer}/BUILD.txt"] = (build_txt(release, spec, manifest, repo_head, packaged).encode(), 0o100644)
+    for rel in release["notices"]:
+        files[f"{drawer}/Licenses/VectorCraft/{rel}"] = ((WORK / rel).read_bytes(), 0o100644)
+    files[f"{drawer}/Licenses/AROS-NOTICE.txt"] = ((PACKAGING / spec["notice"]).read_bytes(), 0o100644)
+    files[f"{drawer}/Licenses/AROS-LICENSE.txt"] = ((PACKAGING / "AROS-LICENSE.txt").read_bytes(), 0o100644)
+    text, crates = third_party(manifest, Path(cfg["build_root"]))
+    files[f"{drawer}/Licenses/THIRD-PARTY.txt"] = (text.encode(), 0o100644)
+    for rel, data in rust_docs(cfg, manifest).items():
+        files[f"{drawer}/Licenses/{rel}"] = (data, 0o100644)
+    long_names = sorted({part for n in files for part in n.split("/") if len(part) > NAME_LIMIT})
+    if long_names:
+        raise Failure(f"archive names longer than {NAME_LIMIT} characters: {long_names}")
+    write_zip(a.dist / name, files, date)
+    digest = dist.record(name)
+    record = {"archive": name, "sha256": digest, "bytes": (a.dist / name).stat().st_size, "target": target,
+              "build_id": manifest["build_id"], "repository_head": repo_head, "work_head": manifest["work_head"],
+              "crates": crates, "entries": {n: sha256(d) for n, (d, _) in sorted(files.items())},
+              "packaged_binaries": {n: sha256(d) for n, d in packaged.items()}}
+    (build / "package.json").write_text(json.dumps(record, indent=2) + "\n")
+    print(json.dumps({k: record[k] for k in ("archive", "sha256", "bytes", "target", "build_id", "packaged_binaries")}, indent=2))
+
+
+def git_tar(checkout, commit, paths=()):
+    return lzma.compress(git("archive", "--format=tar", commit, *paths, cwd=checkout))
+
+
+def cmd_source(a, release):
+    builds = [b.resolve() for b in a.build]
+    manifests = [check_build(b, release)[0] for b in builds]
+    targets = [m["target"] for m in manifests]
+    if len(set(targets)) != len(targets):
+        raise Failure(f"one build per target, got {targets}")
+    if len({m["work_head"] for m in manifests}) != 1:
+        raise Failure("the builds come from different work copy commits")
+    repo_head = head_clean()
+    dist = Dist(a.dist)
+    name = release["source_archive"]
+    dist.claim(name)
+    prefix = name.removesuffix(".zip") + "/"
+    path = a.dist / name
+    partial = path.with_name(path.name + ".partial")
+    excludes = [f":(exclude){x}" for x in release["source_archive_exclude"]]
+    run(["git", "-C", REPO, "archive", "--format=zip", f"--prefix={prefix}", "-o", partial, "HEAD", "--", ".", *excludes])
+    added = {}
+    with zipfile.ZipFile(partial, "a", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+        def add(label, data):
+            if label in added:
+                if added[label] != sha256(data):
+                    raise Failure(f"two different inputs named {label}")
+                return
+            added[label] = sha256(data)
+            bundle.writestr(prefix + "sources/" + label, data)
+
+        m0 = manifests[0]
+        add("vectorcraft-upstream.tar.xz", git_tar(REPO / "upstream/vectorcraft", m0["upstreams"]["vectorcraft"]["commit"]))
+        stds = {}
+        for manifest in manifests:
+            cfg = config_for(manifest["target"])
+            add("egui-aros.tar.xz", git_tar(Path(cfg["egui_aros"]), manifest["upstreams"]["egui-aros"]["commit"]))
+            libc = manifest["libc_aros"]
+            commit = libc.get("rust_aros_commit", cfg["rust_aros_commit"])
+            add(f"rust-aros-{commit[:12]}.tar.xz",
+                git_tar(Path(cfg["rust_aros"]), commit, ["std-groundwork/libc-aros", "std-groundwork/std-patch", "x86_64-aros.json.in", "profiles"]))
+            if manifest.get("pthread"):
+                pc = manifest["pthread"]["aros_src_commit"]
+                add(f"aros-pthread-{pc[:12]}.tar.xz", git_tar(Path(cfg["aros_src"]), pc, ["compiler/pthread", "LICENSE"]))
+            if manifest.get("glue"):
+                gc = manifest["glue"]["pomaros_hosted_commit"]
+                add(f"pomaros-hosted-{gc[:12]}.tar.xz", git_tar(Path(cfg["pomaros_hosted"]), gc, ["hosted/rust", "LICENSE"]))
+            key = manifest["toolchain"]["std_source_sha256"]
+            if key not in stds:
+                packed = io.BytesIO()
+                with tarfile.open(fileobj=packed, mode="w:xz") as tar:
+                    tar.add(Path(manifest["toolchain"]["sysroot"]) / "lib/rustlib/src/rust", arcname="rust", recursive=True)
+                stds[key] = f"rust-std-{key[:12]}.tar.xz"
+                add(stds[key], packed.getvalue())
+            for info in manifest["crates"].values():
+                crate = f"{info['package']}-{info['version']}.crate"
+                found = list(Path(cfg["cargo_home"]).glob("registry/cache/*/" + crate))
+                if len(found) != 1:
+                    raise Failure(f"{crate} is not in {cfg['cargo_home']}")
+                add("crates/" + crate, found[0].read_bytes())
+        index = {"repository_head": repo_head, "work_head": m0["work_head"],
+                 "builds": {m["target"]: m["build_id"] for m in manifests},
+                 "rust_std": stds, "files": dict(sorted(added.items()))}
+        bundle.writestr(prefix + "sources/INDEX.json", json.dumps(index, indent=2) + "\n")
+    partial.rename(path)
+    digest = dist.record(name)
+    print(json.dumps({"archive": str(path), "sha256": digest, "targets": targets, "inputs": sorted(added)}, indent=2))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("build", type=Path)
+    p.add_argument("kind", choices=["binary", "source"])
+    p.add_argument("build", type=Path, nargs="+")
     p.add_argument("--dist", type=Path, default=REPO / "dist")
-    p.add_argument("--packaging", type=Path, default=PACKAGING,
-                   help="directory with release.json, README.md and RELEASE-NOTES.md (default: packaging/);"
-                        " AROS-NOTICE.txt always comes from packaging/")
     a = p.parse_args()
-    release_dir = a.packaging.resolve()
-    release = json.loads((release_dir / "release.json").read_text())
+    a.dist = a.dist.resolve()
+    release = json.loads((PACKAGING / "release.json").read_text())
     try:
-        manifest = check_build(a.build.resolve(), release)
-        names = {"archive": release["archive"], "source": release["source_archive"], "notes": release["release_notes"]}
-        a.dist.mkdir(parents=True, exist_ok=True)
-        for n in names.values():
-            if (a.dist / n).exists():
-                raise Failure(f"{a.dist / n} exists; a delivered file is never replaced")
-
-        head_time = int(git("log", "-1", "--format=%ct").decode().strip())
-        date = time.gmtime(head_time)[:6]
-        drawer = release["drawer"]
-        files = {}  # archive path -> (bytes, mode)
-        for name in manifest["binaries"]:
-            data = (a.build / name).read_bytes()
-            if release["build"].get("strip"):
-                data = stripped(data, name)
-            files[f"{drawer}/{name}"] = (data, 0o100755)
-        with tempfile.TemporaryDirectory() as tmp:
-            source = WORK / release["icon_source"].removeprefix("work:")
-            subprocess.run([sys.executable, str(REPO / "scripts" / "icons.py"), str(source), tmp, drawer, str(release["stack"])], check=True)
-            import icons
-            w, h, rows = icons.decode_rgba(source)
-            (Path(tmp) / drawer / f"{drawer}.info").write_bytes(icons.icon(w, h, rows, icons.ICON_TOOL, release["stack"], ["GUI_RENDERER=CPU", "IMAGE_COMPUTE=CPU"]))
-            files[f"{drawer}.info"] = ((Path(tmp) / f"{drawer}.info").read_bytes(), 0o100644)
-            files[f"{drawer}/{drawer}.info"] = ((Path(tmp) / drawer / f"{drawer}.info").read_bytes(), 0o100644)
-        files[f"{drawer}/README.md"] = ((release_dir / "README.md").read_bytes(), 0o100644)
-        packaged = {n: sha256(files[f"{drawer}/{n}"][0]) for n in manifest["binaries"]} if release["build"].get("strip") else None
-        files[f"{drawer}/SOURCE.txt"] = (source_txt(release, manifest, names, packaged).encode(), 0o100644)
-        public_manifest = json.loads(json.dumps(manifest))
-        replacements = [(str(REPO), "/port"), (str(Path(manifest["toolchain"]["sysroot"])), "/rust"), (str(Path(vcconfig.load()["aros_sdk"])), "/sdk"), (str(Path.home()), "/host")]
-        def sanitize(value):
-            if isinstance(value, str):
-                for old, new in replacements: value = value.replace(old, new)
-                return value
-            if isinstance(value, list): return [sanitize(v) for v in value]
-            if isinstance(value, dict): return {sanitize(k): sanitize(v) for k,v in value.items()}
-            return value
-        public_manifest = sanitize(public_manifest)
-        public_manifest["packaged_binaries"] = {name: {"sha256": sha256(files[f"{drawer}/{name}"][0]), "unstripped_sha256": info["sha256"], "bytes": len(files[f"{drawer}/{name}"][0])} for name,info in manifest["binaries"].items()}
-        files[f"{drawer}/BUILD.json"] = ((json.dumps(public_manifest,indent=2)+"\n").encode(),0o100644)
-        for name, info in manifest["binaries"].items():
-            debug = a.dist / "debug" / (name + ".unstripped")
-            debug.parent.mkdir(exist_ok=True)
-            if debug.exists(): raise Failure(f"{debug} exists")
-            import shutil
-            shutil.copyfile(a.build / name, debug)
-            if sha256(debug.read_bytes()) != info["sha256"]: raise Failure("debug copy mismatch")
-        renames = release.get("notice_renames", {})
-        for rel in release["vectorcraft_notices"]:
-            files[f"{drawer}/Licenses/VectorCraft/{renames.get(rel, rel)}"] = ((WORK / rel).read_bytes(), 0o100644)
-        if renames:
-            note = "".join(f"{Path(new).name} is {old} in ATTRIBUTION.md, renamed to fit a 30-character AmigaDOS name.\n"
-                           for old, new in renames.items())
-            files[f"{drawer}/Licenses/VectorCraft/RENAMED.txt"] = (note.encode(), 0o100644)
-        files[f"{drawer}/Licenses/AROS-NOTICE.txt"] = ((PACKAGING / "AROS-NOTICE.txt").read_bytes(), 0o100644)
-        files[f"{drawer}/Licenses/AROS-LICENSE.txt"] = (git("show", manifest["pthread"]["aros_src_commit"] + ":LICENSE", cwd=Path(vcconfig.load()["aros_src"])), 0o100644)
-        text, crates = third_party(manifest)
-        files[f"{drawer}/Licenses/THIRD-PARTY.txt"] = (text.encode(), 0o100644)
-        for rel, data in rust_docs(manifest).items():
-            files[f"{drawer}/Licenses/{rel}"] = (data, 0o100644)
-
-        # Classic FFS volumes take names of up to 30 characters.
-        long_names = sorted({part for n in files for part in n.split("/") if len(part) > 30})
-        if long_names:
-            raise Failure(f"archive names longer than 30 characters: {long_names}")
-        archive = a.dist / names["archive"]
-        partial = archive.with_name(archive.name + ".partial")
-        with zipfile.ZipFile(partial, "x") as z:
-            dirs = sorted({str(Path(n).parent) for n in files if "/" in n} | {d for n in files for d in
-                          ["/".join(n.split("/")[:i]) for i in range(1, n.count("/"))]})
-            for d in dirs:
-                zip_entry(z, d + "/", b"", 0o40755, date)
-            for n in sorted(files):
-                zip_entry(z, n, files[n][0], files[n][1], date)
-        partial.rename(archive)
-
-        src = a.dist / names["source"]
-        prefix = names["source"].removesuffix(".zip") + "/"
-        excludes = [f":(exclude){x}" for x in release["source_archive_exclude"]]
-        subprocess.run(["git", "-C", str(REPO), "archive", "--format=zip", f"--prefix={prefix}", "-o", str(src), "HEAD", "--", ".", *excludes], check=True)
-        import io, lzma, tarfile
-        with zipfile.ZipFile(src, "a", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
-            inputs = [
-                ("vectorcraft-upstream", REPO / "upstream/vectorcraft", manifest["upstreams"]["vectorcraft"]["commit"], []),
-                ("egui-aros", Path(vcconfig.load()["egui_aros"]), manifest["upstreams"]["egui-aros"]["commit"], []),
-                ("aros-pthread", Path(vcconfig.load()["aros_src"]), manifest["pthread"]["aros_src_commit"], ["compiler/pthread", "LICENSE"]),
-                ("rust-aros-inputs", Path(vcconfig.load()["rust_aros"]), manifest["libc_aros"]["rust_aros_commit"], ["std-groundwork/libc-aros", "std-groundwork/std-patch", "x86_64-aros.json.in"]),
-            ]
-            for label, checkout, commit, paths in inputs:
-                data = git("archive", "--format=tar", commit, *paths, cwd=checkout)
-                bundle.writestr(prefix + "sources/" + label + ".tar.xz", lzma.compress(data))
-            std_source = Path(manifest["toolchain"]["sysroot"]) / "lib/rustlib/src/rust"
-            packed = io.BytesIO()
-            with tarfile.open(fileobj=packed, mode="w:xz") as tar:
-                tar.add(std_source, arcname="rust", recursive=True)
-            bundle.writestr(prefix + "sources/rust-std.tar.xz", packed.getvalue())
-            active_crates = {(info["package"], info["version"]) for info in manifest["crates"].values()}
-            for spec in json.loads((REPO / "patches/crates/crates.json").read_text())["crates"]:
-                if (spec["name"], spec["version"]) not in active_crates:
-                    continue
-                name = f"{spec['name']}-{spec['version']}.crate"
-                crate = next(Path(vcconfig.load()["cargo_home"]).glob("registry/cache/*/"+name))
-                bundle.writestr(prefix + "sources/crates/" + name, crate.read_bytes())
-        (a.dist / names["notes"]).write_bytes((release_dir / "RELEASE-NOTES.md").read_bytes())
-
-        sums = a.dist / "SHA256SUMS"
-        existing = sums.read_text().splitlines() if sums.exists() else []
-        listed = {line.split()[-1] for line in existing if line.strip()}
-        added = [f"{sha256((a.dist / n).read_bytes())}  {n}" for n in [names["archive"], names["source"], *["debug/" + p.name for p in sorted((a.dist / "debug").iterdir())]] if n not in listed]
-        sums.write_text("\n".join(existing + added) + "\n")
-
-        record = {"release": release["title"], "build": str(a.build.resolve()), "build_id": manifest["build_id"],
-                  "repository_head": git("rev-parse", "HEAD").decode().strip(), "work_head": manifest["work_head"],
-                  "archive": {"name": names["archive"], "sha256": sha256(archive.read_bytes()), "bytes": archive.stat().st_size,
-                              "entries": {n: sha256(d) for n, (d, _) in sorted(files.items())}},
-                  "source_archive": {"name": names["source"], "sha256": sha256(src.read_bytes())},
-                  "crates": len(crates)}
-        (a.build / f"package-{release['label']}.json").write_text(json.dumps(record, indent=2) + "\n")
-        print(json.dumps({k: record[k] for k in ("release", "build_id", "repository_head", "crates")} |
-                         {"archive": str(archive), "sha256": record["archive"]["sha256"], "source_archive": str(src)}, indent=2))
-    except Failure as e:
+        (cmd_binary if a.kind == "binary" else cmd_source)(a, release)
+    except (Failure, vcconfig.ConfigError, subprocess.CalledProcessError) as e:
         sys.exit(f"package: {e}")
 
 

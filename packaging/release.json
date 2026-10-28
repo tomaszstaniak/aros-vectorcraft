@@ -1,0 +1,55 @@
+{
+  "name": "VectorCraft",
+  "version": "0.17.0",
+  "upstream_version": "0.17.0+main 9997ff02",
+  "drawer": "VectorCraft",
+  "stack": 16777216,
+  "tooltypes": ["GUI_RENDERER=CPU"],
+  "icon_source": "work:assets/app-icon/hicolor/64x64/apps/ai.storyteller.vectorcraft.png",
+  "source_archive": "VectorCraft-0.17.0-source.zip",
+  "source_archive_exclude": [],
+  "notices": [
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "NOTICE",
+    "ASSETS.md",
+    "assets/app-icon/LICENSE.txt",
+    "assets/icons/LICENSE-lucide.txt",
+    "assets/fonts/OFL-Inter.txt",
+    "assets/fonts/OFL-JetBrainsMono.txt",
+    "assets/fonts/OFL-SourceSans3.txt",
+    "assets/fonts/OFL-SourceSerif4.txt",
+    "docs/brand/LICENSE-brand.txt",
+    "licenses/pdf-backend/hayro-cmap/LICENSE-APACHE",
+    "licenses/pdf-backend/hayro-cmap/LICENSE-MIT",
+    "licenses/pdf-backend/hayro-cmap/LICENSE.txt",
+    "licenses/pdf-backend/hayro-interpret/LICENSE-APACHE",
+    "licenses/pdf-backend/hayro-interpret/LICENSE-MIT",
+    "licenses/pdf-backend/hayro-interpret/assets/CGATS_LICENSE.txt",
+    "licenses/pdf-backend/hayro-interpret/assets/LICENSE_FOXIT",
+    "licenses/pdf-backend/hayro-jbig2/LICENSE-APACHE",
+    "licenses/pdf-backend/hayro-jbig2/LICENSE-MIT",
+    "licenses/pdf-backend/hayro-syntax/LICENSE-APACHE",
+    "licenses/pdf-backend/hayro-syntax/LICENSE-MIT"
+  ],
+  "targets": {
+    "aros-x86_64-abiv11-pc": {
+      "system": "AROS x86_64, ABIv11 (AROS One 1.3 / ABIv11 2026.09)",
+      "sdk": "x86_64 ABIv11 SDK (deadwood2/AROS)",
+      "notice": "notices/aros-x86_64-abiv11-pc.txt",
+      "build": {"lto": "fat", "panic": "unwind", "features": []}
+    },
+    "aros-x86_64-abiv1-pc": {
+      "system": "AROS x86_64, mainline ABIv1 (built against AROS 9802c8c0, 2026-10-28)",
+      "sdk": "x86_64 mainline ABIv1 SDK built from AROS 9802c8c03c4797946b5a55621a23e2d904c5e126",
+      "notice": "notices/aros-x86_64-abiv1-pc.txt",
+      "build": {"lto": "fat", "panic": "abort", "features": []}
+    },
+    "aros-aarch64-abiv1-raspi": {
+      "system": "AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22)",
+      "sdk": "Raspberry Pi AArch64 ABIv1 SDK from AROS-20260822-raspi-aarch64-system",
+      "notice": "notices/aros-aarch64-abiv1-raspi.txt",
+      "build": {"lto": null, "panic": "abort", "features": []}
+    }
+  }
+}

@@ -2,7 +2,7 @@
 
 Port of [VectorCraft](https://github.com/storytold/vectorcraft) (main of 2026-10-27, after 0.17.0), a vector drawing program written in Rust, to AROS.
 
-Status: in development. No release yet.
+Status: in development. Release packaging for 0.17.0 is prepared (`packaging/`, `scripts/package.py`); nothing is published yet.
 
 Targets:
 

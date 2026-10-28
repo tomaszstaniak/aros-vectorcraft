@@ -6,9 +6,11 @@ followed by a second PNG for the selected state (AROS
 workbench/libs/icon/diskobjPNGio.c). Tags used here:
   0x8000100f  icon type (2 = drawer, 3 = tool)
   0x80001009  stack size in bytes (a tool's stack when started from Workbench)
+  0x8000100b  one ToolType, as a NUL-terminated string (repeated per ToolType)
 
 Usage: icons.py SOURCE.png DEST_DIR NAME STACK
 writes DEST_DIR/NAME/NAME.info (tool) and DEST_DIR/NAME.info (drawer).
+scripts/package.py calls icon() directly to add the tool's ToolTypes.
 """
 import struct
 import sys
