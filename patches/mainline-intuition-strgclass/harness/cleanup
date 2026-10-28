@@ -1,0 +1,10 @@
+FailAt 1000
+Protect SYS:boot/grub/grub.cfg +rwd
+Copy SYS:boot/grub/grub.cfg.pre-strg SYS:boot/grub/grub.cfg
+Delete SYS:boot/grub/grub.cfg.pre-strg FORCE
+Delete SYS:boot/aros-base-strg-before.pkg.xz FORCE
+Delete SYS:boot/aros-base-strg-after.pkg.xz FORCE
+Copy SYS:boot/grub/grub.cfg RESULTS:strg-1028/grub.cfg.final
+List SYS:boot/ >RESULTS:strg-1028/boot-list-final.txt
+List SYS:boot/grub/grub.cfg >>RESULTS:strg-1028/boot-list-final.txt
+Echo done >RESULTS:strg-1028/cleanup-done.txt

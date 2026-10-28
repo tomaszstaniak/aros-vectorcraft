@@ -1,0 +1,2 @@
+loader: GRUB 2.16
+arg: ATA=32bit

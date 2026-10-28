@@ -1,0 +1,10 @@
+Directory "SYS:boot" on Wednesday 10/28/26:
+grub                         Dir ---rwed Today       20:16:17
+poseidon.pkg.xz           276072 ---rwed Today       16:01:29
+pc                           Dir ---rwed Today       16:01:29
+aros-fs.pkg.xz            206764 ---rwed Today       16:01:29
+aros-base.pkg.xz          483652 ---rwed Today       16:01:29
+3 files - 2 directories - 1891 blocks used
+Directory "SYS:boot/grub" on Wednesday 10/28/26:
+grub.cfg                    7038 ---rwed Today       20:16:17
+1 file - 14 blocks used

@@ -1,0 +1,13 @@
+FailAt 1000
+MakeDir RESULTS:strg-1028
+Copy SYS:boot/grub/grub.cfg RESULTS:strg-1028/grub.cfg.orig
+List SYS:boot/ >RESULTS:strg-1028/boot-list-before.txt
+List SYS:boot/grub/grub.cfg >>RESULTS:strg-1028/boot-list-before.txt
+Copy SYS:boot/grub/grub.cfg SYS:boot/grub/grub.cfg.pre-strg
+Copy RAM:strg/aros-base-strg-before.pkg.xz SYS:boot/aros-base-strg-before.pkg.xz
+Copy RAM:strg/aros-base-strg-after.pkg.xz SYS:boot/aros-base-strg-after.pkg.xz
+Protect SYS:boot/grub/grub.cfg +rwd
+Join SYS:boot/grub/grub.cfg.pre-strg RAM:strg/strg-entries.cfg AS SYS:boot/grub/grub.cfg
+Copy SYS:boot/grub/grub.cfg RESULTS:strg-1028/grub.cfg.test
+List SYS:boot/ >RESULTS:strg-1028/boot-list-test.txt
+Echo done >RESULTS:strg-1028/setup-done.txt

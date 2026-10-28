@@ -1,0 +1,1 @@
+mode=long initial pattern length=300

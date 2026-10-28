@@ -1,0 +1,4 @@
+Type     Available        In-Use       Maximum       Largest
+chip    2089330128      51432528    2140762656    1171226800
+fast             0             0             0             0
+total   2089330128      57597009    2146927137    1171226800

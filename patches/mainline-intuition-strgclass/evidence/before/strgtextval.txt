@@ -1,0 +1,11 @@
+ok OM_NEW, 0 characters: 0 stored
+ok OM_SET, 0 characters: 0 stored
+ok OM_NEW, 5 characters: 5 stored
+ok OM_SET, 5 characters: 5 stored
+ok OM_NEW, 15 characters: 15 stored
+ok OM_SET, 15 characters: 15 stored
+FAIL OM_NEW, 16 characters: guard byte 0 after the buffer was overwritten
+FAIL OM_SET, 16 characters: guard byte 0 after the buffer was overwritten
+FAIL OM_NEW, 300 characters: guard byte 0 after the buffer was overwritten
+FAIL OM_SET, 300 characters: guard byte 0 after the buffer was overwritten
+FAIL

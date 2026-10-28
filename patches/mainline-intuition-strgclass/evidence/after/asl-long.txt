@@ -1,0 +1,5 @@
+mode=long initial pattern length=300
+AslRequest=1 file=[mystart] drawer=[RAM:]
+pattern length=256 pattern=[#?.(ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|ext|]
+allocation loop done (2000)
+END

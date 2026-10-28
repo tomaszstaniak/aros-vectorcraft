@@ -1,0 +1,9 @@
+Directory "SYS:boot" on Wednesday 10/28/26:
+aros-base-strg-after.pkg.xz  483544 ---rw-d Today       20:08:24
+aros-base-strg-before.pkg.xz  483232 ---rw-d Today       20:08:24
+grub                         Dir ---rwed Today       20:08:24
+poseidon.pkg.xz           276072 ---rwed Today       16:01:29
+pc                           Dir ---rwed Today       16:01:29
+aros-fs.pkg.xz            206764 ---rwed Today       16:01:29
+aros-base.pkg.xz          483652 ---rwed Today       16:01:29
+5 files - 2 directories - 3780 blocks used

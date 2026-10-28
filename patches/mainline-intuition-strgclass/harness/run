@@ -1,0 +1,8 @@
+.KEY label/A
+FailAt 1000
+MakeDir RESULTS:strg-1028/<label>
+RAM:strg/bootargs >RESULTS:strg-1028/<label>/bootargs.txt
+Version intuition.library FULL >RESULTS:strg-1028/<label>/version.txt
+RAM:strg/strgtextval >RESULTS:strg-1028/<label>/strgtextval.txt
+Echo $RC >RESULTS:strg-1028/<label>/strgtextval.rc
+Echo done >RESULTS:strg-1028/<label>/run-done.txt

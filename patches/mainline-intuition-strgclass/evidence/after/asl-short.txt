@@ -1,0 +1,5 @@
+mode=short initial pattern length=12
+AslRequest=1 file=[mystart] drawer=[RAM:]
+pattern length=12 pattern=[#?.(txt|svg)]
+allocation loop done (2000)
+END
