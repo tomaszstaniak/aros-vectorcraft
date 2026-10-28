@@ -31,6 +31,8 @@ Unpack the archive for your system anywhere writable and double-click VectorCraf
 - The Raspberry Pi package has been tested in an emulator only, not on a physical Pi.
 - Letters typed with a keymap other than ISO 8859-1 can arrive wrong; file and drawer names must be plain ASCII or UTF-8.
 - Clipboard text only. File > Print saves a PDF. No automatic updates. The automation server and plug-ins have not been tested on AROS.
+- On mainline AROS, after the first start from Workbench with `GUI_RENDERER=AUTO` since the system started, the VectorCraft drawer can stay in use until a reboot.
+- `vectorcraft-cli` cannot write a file at the top of a volume named the AROS way (`RAM:x.png`); use `/RAM/x.png` or a drawer.
 - Shell starts need a 16 MiB stack; the Workbench icon sets it.
 
 Licences and notices for VectorCraft and everything built into it are in the `Licenses` drawer of each package.

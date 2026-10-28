@@ -60,7 +60,10 @@
       },
       "limitations": [
         "- OpenGL (AUTO, GPU) works with Mesa's software renderer, which is slower",
-        "  than CPU. Hardware OpenGL drivers have not been tested."
+        "  than CPU. Hardware OpenGL drivers have not been tested.",
+        "- After the first start from Workbench with GUI_RENDERER=AUTO since the",
+        "  system started, the VectorCraft drawer can stay in use until a reboot",
+        "  (it cannot be deleted or replaced before then)."
       ]
     },
     "aros-aarch64-abiv1-raspi": {
@@ -90,6 +93,8 @@
     "- The clipboard carries text only. File > Print saves a PDF instead of",
     "  printing.",
     "- No automatic updates. The automation server (vectorcraft-cli mcp, the",
-    "  --control port) and plug-ins have not been tested on AROS."
+    "  --control port) and plug-ins have not been tested on AROS.",
+    "- vectorcraft-cli cannot write a file at the top of a volume named the AROS",
+    "  way (RAM:x.png); write /RAM/x.png or into a drawer (RAM:out/x.png)."
   ]
 }
