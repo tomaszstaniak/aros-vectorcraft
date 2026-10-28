@@ -116,12 +116,6 @@ def check_upstream(rid, spec):
 # ---------------------------------------------------------------- commands
 
 def cmd_deps(args):
-    cfg = vcconfig.load(["cargo_home"])
-    if cfg["native_profile"] == "v1":
-        cfg = vcconfig.load(["official_sdk", "cargo_home"])
-        prefix = Path(cfg["official_sdk"])
-        source = check_upstream("vectorcraft", upstreams()["vectorcraft"])
-        return run([prefix / "bin/cargo", "fetch", "--locked", "--manifest-path", source / "Cargo.toml"], env=dict(os.environ, CARGO_HOME=cfg["cargo_home"], RUSTC=str(prefix / "bin/rustc")), capture=False)
     cfg = vcconfig.load(["cargo_home", "toolchain"])
     source = check_upstream("vectorcraft", upstreams()["vectorcraft"])
     run(["cargo", "+" + cfg["toolchain"], "fetch", "--locked", "--manifest-path", source / "Cargo.toml"],
@@ -267,7 +261,7 @@ def cmd_crates(args, quiet=False):
     cfg = vcconfig.load(["cargo_home", "build_root"])
     out = {}
     for spec in crate_specs():
-        if spec.get("profiles") and cfg["native_profile"] not in spec["profiles"]:
+        if spec.get("profiles") and cfg["profile"] not in spec["profiles"]:
             continue
         name = f"{spec['name']}-{spec['version']}"
         dest = Path(cfg["build_root"]) / "crates" / name
@@ -438,13 +432,10 @@ def build_pthread(cfg, root):
 
 def cmd_build(args):
     cmd_verify(args)
-    if vcconfig.load()["native_profile"] == "v1":
-        import native_v1
-        try:
-            return native_v1.build(args, vcconfig.load())
-        except native_v1.Failure as error:
-            raise Failure(str(error)) from error
-    cfg = vcconfig.load(["aros_gcc", "aros_ar", "aros_sdk", "aros_src", "rust_aros", "toolchain", "cargo_home", "build_root"])
+    cfg = vcconfig.load(["aros_gcc", "aros_ar", "aros_sdk", "rust_aros", "toolchain", "cargo_home", "build_root"])
+    v11 = cfg["profile"] == "v11"
+    if v11 and not cfg.get("aros_src"):
+        raise Failure("aros_src is required for x86_64 ABIv11 (pthread link library); see `vc.py config`")
     for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_TARGET_DIR",
                  "CARGO_PROFILE_RELEASE_PANIC"):
         if os.environ.get(name):
@@ -476,11 +467,20 @@ def cmd_build(args):
             for patch in libc_patches:
                 run(["patch", "--quiet", "-p1", "-i", patch], cwd=staged)
             staged.rename(libc)
-    template = run(["git", "-C", rust_aros, "show", f"{commit}:x86_64-aros.json.in"]).stdout.decode()
-    target_json = root / "x86_64-aros.json"
-    target_text = (template.replace("@AROS_GCC@", cfg["aros_gcc"]).replace("@AROS_SDK@", cfg["aros_sdk"])
-                   .replace("@AROS_EXTRA_LIBS@", ""))
-    target_data = json.loads(target_text)
+    if v11:
+        template = run(["git", "-C", rust_aros, "show", f"{commit}:x86_64-aros.json.in"]).stdout.decode()
+        target_json = root / "x86_64-aros.json"
+        target_text = (template.replace("@AROS_GCC@", cfg["aros_gcc"]).replace("@AROS_SDK@", cfg["aros_sdk"])
+                       .replace("@AROS_EXTRA_LIBS@", ""))
+        target_data = json.loads(target_text)
+    else:
+        # rust-aros keeps the mainline profile without machine paths; the linker, the SDK and
+        # the pthread library are this build's.
+        target_data = json.loads(run(["git", "-C", rust_aros, "show", f"{commit}:profiles/{cfg['profile']}.json"]).stdout)
+        target_data["linker"] = cfg["aros_gcc"]
+        target_data["pre-link-args"]["gnu-cc"] = [f"--sysroot={cfg['aros_sdk']}"]
+        target_data["late-link-args"] = {"gnu-cc": ["-lpthread"]}
+        target_json = root / f"{cfg['profile']}.json"
     target_data["pre-link-args"]["gnu-cc"].append("-nix")
     target_text = json.dumps(target_data, indent=2) + "\n"
     if not target_json.exists() or target_json.read_text() != target_text:
@@ -491,7 +491,8 @@ def cmd_build(args):
         egui_aros, egui_aros_record = egui_aros_vendor(cfg, root, src)
     else:
         egui_aros, egui_aros_record = {}, None
-    pthread_dir, pthread = build_pthread(cfg, root)
+    # Mainline's pthread already frees the slot of a thread detached after it finished (c31d3294).
+    pthread_dir, pthread = build_pthread(cfg, root) if v11 else (None, None)
 
     # getrandom has no AROS backend; vectorcraft-aros-entropy supplies the custom one.
     # The build root first: patched crates and the egui-aros vendor tree live under it, and their
@@ -508,7 +509,8 @@ def cmd_build(args):
     # link line instead (pre-link arguments reach only final links): they define every symbol
     # of the SDK's pthread.o and pthread_create.o, so -lpthread pulls neither. pthread.c also
     # defines the functions of the other members, so whole-archive linking would collide.
-    flags.append("-Zpre-link-args=" + " ".join(str(pthread_dir / f"{n}.o") for n in PTHREAD_PATCHED))
+    if pthread_dir:
+        flags.append("-Zpre-link-args=" + " ".join(str(pthread_dir / f"{n}.o") for n in PTHREAD_PATCHED))
     command = ["cargo", "+" + cfg["toolchain"], "build", "--release", "--target", target_json,
                "-Zbuild-std=std,panic_" + cfg["panic"], "-Zjson-target-spec",
                "--config", "build.rustflags=" + json.dumps(flags),
@@ -544,7 +546,7 @@ def cmd_build(args):
         command.append("--no-default-features")
     if args.features:
         command += ["--features", args.features]
-    env = dict(os.environ, VECTORCRAFT_BUILD_ABI="ABIv11", CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(root / "target"),
+    env = dict(os.environ, VECTORCRAFT_BUILD_TARGET=cfg["target"], CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(root / "target"),
                AROS_CC=cfg["aros_gcc"], AROS_GCC=cfg["aros_gcc"], AROS_AR=cfg["aros_ar"], AROS_SDK=cfg["aros_sdk"])
     build_id = str(uuid.uuid4())
     out = root / "out" / f"{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{build_id[:8]}"
@@ -553,7 +555,7 @@ def cmd_build(args):
         "build_id": build_id,
         "status": "building",
         "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
-        "abi": "x86_64 ABIv11",
+        "target": cfg["target"],
         "path_mode": "-nix (DOS paths resolved at frontend boundaries)",
         "stack_bytes": 16777216,
         "renderers": {"gui": "CPU", "image": "CPU", "gpu_backends_compiled": False},
@@ -595,7 +597,7 @@ def cmd_build(args):
         raise Failure(f"build failed; see {log}")
     manifest["cargo_lock_build_sha256"] = sha256_file(src / "Cargo.lock")
     binaries = {}
-    release = root / "target" / "x86_64-aros" / "release"
+    release = root / "target" / target_json.stem / "release"
     for name in binary_names:
         path = release / name
         if path.exists():
@@ -605,12 +607,16 @@ def cmd_build(args):
                               "undefined_symbols": undefined}
             if undefined:
                 raise Failure(f"{name} has undefined symbols (collect-aros did not catch them): {undefined[:8]}")
-    manifest.update(status="built-not-run", binaries=binaries, linked_packages=linked_packages(messages))
+    if not binaries:
+        manifest["status"] = "failed"
+        (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        raise Failure(f"cargo finished but {release} holds none of {binary_names}")
+    manifest.update(status="built-not-run", binaries=binaries, linked_packages=linked_packages(messages, target_json.stem))
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     print(json.dumps({"output": str(out), "binaries": binaries, "work_dirty": bool(status)}, indent=2))
 
 
-def linked_packages(messages):
+def linked_packages(messages, target_dir):
     """Packages compiled for the AROS target (not build scripts or proc-macros, which run on the
     host): package id -> manifest path."""
     found = {}
@@ -620,7 +626,7 @@ def linked_packages(messages):
         m = json.loads(line)
         if m.get("reason") != "compiler-artifact" or {"custom-build", "proc-macro"} & set(m["target"]["kind"]):
             continue
-        if any("/x86_64-aros/" in name for name in m["filenames"]):
+        if any(f"/{target_dir}/" in name for name in m["filenames"]):
             found[m["package_id"]] = m["manifest_path"]
     return dict(sorted(found.items()))
 
