@@ -422,14 +422,15 @@ def cmd_source(a, release):
     excludes = [f":(exclude){x}" for x in release["source_archive_exclude"]]
     run(["git", "-C", REPO, "archive", "--format=zip", f"--prefix={prefix}", "-o", partial, "HEAD", "--", ".", *excludes])
     added = {}
-    with zipfile.ZipFile(partial, "a", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+    date = time.gmtime(int(git("log", "-1", "--format=%ct").decode().strip()))[:6]
+    with zipfile.ZipFile(partial, "a") as bundle:
         def add(label, data):
             if label in added:
                 if added[label] != sha256(data):
                     raise Failure(f"two different inputs named {label}")
                 return
             added[label] = sha256(data)
-            bundle.writestr(prefix + "sources/" + label, data)
+            zip_entry(bundle, prefix + "sources/" + label, data, 0o100644, date)
 
         m0 = manifests[0]
         add("vectorcraft-upstream.tar.xz", git_tar(REPO / "upstream/vectorcraft", m0["upstreams"]["vectorcraft"]["commit"]))
@@ -463,7 +464,7 @@ def cmd_source(a, release):
         index = {"repository_head": repo_head, "work_head": m0["work_head"],
                  "builds": {m["target"]: m["build_id"] for m in manifests},
                  "rust_std": stds, "files": dict(sorted(added.items()))}
-        bundle.writestr(prefix + "sources/INDEX.json", json.dumps(index, indent=2) + "\n")
+        zip_entry(bundle, prefix + "sources/INDEX.json", (json.dumps(index, indent=2) + "\n").encode(), 0o100644, date)
     partial.rename(path)
     digest = dist.record(name)
     print(json.dumps({"archive": str(path), "sha256": digest, "targets": targets, "inputs": sorted(added)}, indent=2))
