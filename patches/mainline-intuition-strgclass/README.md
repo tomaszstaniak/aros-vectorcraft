@@ -6,7 +6,7 @@ Branch: `intuition-strgclass-textval-bound`, commit `b75e72e5ea753c4000d3f7de065
 (fork tomaszstaniak/AROS).
 `git am` of the patch in `series` onto the base reproduces that tree (checked).
 
-Status: prepared, not yet submitted (see Disposition).
+Status: submitted 2026-10-28 as https://github.com/aros-development-team/AROS/pull/1927 (head b75e72e5ea, open).
 
 ## Problem
 
@@ -62,4 +62,4 @@ backup deleted in boot 3. Nothing else written to SYS:. RESULTS:strg-1028 left.
 
 ## Disposition
 
-Pending submission.
+Submitted: https://github.com/aros-development-team/AROS/pull/1927, revision b75e72e5ea75. Remaining: review; i386/arm/m68k builds, an aarch64 link and run of the patched intuition, and SMP runs not done.
