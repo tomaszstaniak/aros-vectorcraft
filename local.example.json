@@ -1,0 +1,8 @@
+{
+  "targets": {
+    "aros-x86_64-abiv11-pc": {"aros_sdk": "/path/to/abiv11/sdk", "aros_gcc": "/path/to/x86_64-aros-gcc", "rust_toolchain": "name-or-path"},
+    "aros-x86_64-abiv1-pc": {"aros_sdk": "/path/to/mainline/sdk", "aros_gcc": "/path/to/x86_64-aros-gcc", "rust_toolchain": "name-or-path"},
+    "aros-aarch64-abiv1-raspi": {"aros_sdk": "/path/to/pi/sdk", "aros_cc": "/path/to/aarch64-aros-clang", "rust_toolchain": "name-or-path"}
+  },
+  "egui_aros": "/path/to/egui-aros"
+}

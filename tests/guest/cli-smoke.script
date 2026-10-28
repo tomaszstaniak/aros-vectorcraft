@@ -1,0 +1,29 @@
+; VectorCraft CLI smoke. Run from the extracted payload drawer with: Execute cli-smoke.script <run-id>
+.KEY RUN/A
+.BRA {
+.KET }
+Stack 16777216
+Failat 30
+MakeDir RESULTS:vc-{RUN}
+MakeDir RAM:vct/out
+vectorcraft-cli --version >RESULTS:vc-{RUN}/version.out
+Echo $RC >RESULTS:vc-{RUN}/version.rc
+vectorcraft-cli info /RAM/vct/shapes.svg >RESULTS:vc-{RUN}/info.out
+Echo $RC >RESULTS:vc-{RUN}/info.rc
+vectorcraft-cli convert /RAM/vct/shapes.svg /RAM/vct/out/shapes.png --scale 2 >RESULTS:vc-{RUN}/png.out
+Echo $RC >RESULTS:vc-{RUN}/png.rc
+vectorcraft-cli convert /RAM/vct/shapes.svg /RAM/vct/out/shapes.pdf >RESULTS:vc-{RUN}/pdf.out
+Echo $RC >RESULTS:vc-{RUN}/pdf.rc
+vectorcraft-cli convert /RAM/vct/shapes.svg /RAM/vct/out/shapes.vectorcraft >RESULTS:vc-{RUN}/vc.out
+Echo $RC >RESULTS:vc-{RUN}/vc.rc
+vectorcraft-cli convert /RAM/vct/out/shapes.vectorcraft /RAM/vct/out/back.svg >RESULTS:vc-{RUN}/back.out
+Echo $RC >RESULTS:vc-{RUN}/back.rc
+vectorcraft-cli convert /RAM/vct/shapes.svg /RAM/vct/out/shapes.eps >RESULTS:vc-{RUN}/eps.out
+Echo $RC >RESULTS:vc-{RUN}/eps.rc
+vectorcraft-cli convert "RAM:vct/shapes.svg" "RAM:vct/out/dos form.png" >RESULTS:vc-{RUN}/dosform.out
+Echo $RC >RESULTS:vc-{RUN}/dosform.rc
+vectorcraft-cli convert /RAM/vct/missing.svg /RAM/vct/out/x.png >RESULTS:vc-{RUN}/missing.out
+Echo $RC >RESULTS:vc-{RUN}/missing.rc
+Copy RAM:vct/out/#? RESULTS:vc-{RUN}/
+List RAM:vct/out >RESULTS:vc-{RUN}/list.out
+Echo "done" >RESULTS:vc-{RUN}/done

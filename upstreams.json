@@ -1,0 +1,24 @@
+{
+  "repositories": {
+    "vectorcraft": {
+      "url": "https://github.com/storytold/vectorcraft.git",
+      "commit": "9997ff021503e4f323f084fb7e64618d209d0126",
+      "license": "MIT OR Apache-2.0",
+      "role": "build source; patches/vectorcraft/series applies in order",
+      "branch": "main",
+      "note": "main of 2026-10-27, 510 commits after v0.17.0; chosen by the user on 2026-10-28 so the port builds with egui 0.37"
+    },
+    "storytold-egui": {
+      "url": "https://github.com/storytold/egui.git",
+      "commit": "6d518fc799681571963842f95b55a6b68431b15a",
+      "license": "MIT OR Apache-2.0",
+      "role": "egui/eframe/egui-winit/egui_glow 0.37.0 as locked by VectorCraft; AROS patches via egui-aros"
+    },
+    "storytold-winit": {
+      "url": "https://github.com/storytold/winit.git",
+      "commit": "a517b3846ee8457d84ee4975110bfda6797c44dc",
+      "license": "Apache-2.0",
+      "role": "winit 0.30.13 fork as locked by VectorCraft; contrib AROS backend applied via egui-aros"
+    }
+  }
+}
