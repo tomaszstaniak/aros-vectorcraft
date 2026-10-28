@@ -383,6 +383,39 @@ def tool(cfg, name):
     raise Failure(f"cannot derive {name} from the compiler driver {driver}")
 
 
+def adjust_build_copy(cfg, src, libc, egui_aros):
+    """Two changes to the build copy (never the work copy), recorded in the manifest:
+    VectorCraft's own [patch.crates-io] takes egui and winit from storytold's Git forks, and a
+    patch in Cargo.toml wins over a `--config` patch of the same crate, so those entries are
+    removed for the crates egui-aros supplies; and the lock is moved to libc-aros's libc version,
+    or Cargo leaves the libc patch unused and builds crates.io libc, which has no AROS module."""
+    import re
+    manifest = src / "Cargo.toml"
+    text = manifest.read_text()
+    removed = []
+    for name in egui_aros:
+        pattern = re.compile(rf'^{re.escape(name)} = \{{ git = "https://github.com/storytold/[^"]+", rev = "[0-9a-f]+" \}}\n', re.M)
+        if pattern.search(text):
+            text = pattern.sub("", text)
+            removed.append(name)
+    manifest.write_text(text)
+    return {"removed_git_patches": removed}
+
+
+def pin_libc(cfg, src, libc, config_args, record):
+    """Move the build copy's lock to libc-aros's version (see adjust_build_copy). `config_args`
+    are the build's `--config` patch entries: the lock cannot be resolved without them."""
+    import re
+    version = re.search(r'^version = "([^"]+)"', (libc / "Cargo.toml").read_text(), re.M).group(1)
+    locked = sorted(set(re.findall(r'name = "libc"\nversion = "([^"]+)"', (src / "Cargo.lock").read_text())))
+    for old in locked:
+        if old != version:
+            out = run(["cargo", "+" + cfg["toolchain"], "update", "--manifest-path", src / "Cargo.toml", *config_args,
+                       "-p", f"libc@{old}", "--precise", version], env=dict(os.environ, CARGO_HOME=cfg["cargo_home"]))
+            record.setdefault("libc_update_log", []).append(out.stderr.decode(errors="replace")[-2000:])
+    record.update(libc_locked=locked, libc_used=version)
+
+
 def objdump_key(cfg, obj):
     text = run([tool(cfg, "objdump"), "-d", "-r", "--no-show-raw-insn", obj]).stdout.decode().split("\n", 4)[-1]
     return hashlib.sha256(text.encode()).hexdigest()
@@ -613,6 +646,7 @@ def cmd_build(args):
         egui_aros, egui_aros_record = egui_aros_vendor(cfg, root, src)
     else:
         egui_aros, egui_aros_record = {}, None
+    adjusted = adjust_build_copy(cfg, src, libc, egui_aros)
     # Mainline's pthread already frees the slot of a thread detached after it finished (c31d3294).
     if v11:
         pthread_dir, pthread = build_pthread(cfg, root)
@@ -650,6 +684,8 @@ def cmd_build(args):
     for name, path in egui_aros.items():
         if name not in crates:
             command += ["--config", f"patch.crates-io.{name}.path=" + json.dumps(path)]
+    patch_args = [a for i, a in enumerate(command) if isinstance(a, str) and a.startswith("patch.") and command[i - 1] == "--config"]
+    pin_libc(cfg, src, libc, [x for a in patch_args for x in ("--config", a)], adjusted)
     if args.tool:
         manifest_dir, tool_binary = TOOLS[args.tool]
         # Built from a copy: the path patches would otherwise rewrite the tool's own lock.
@@ -701,6 +737,7 @@ def cmd_build(args):
         "pthread": pthread,
         "glue": glue if raspi else None,
         "egui_aros": egui_aros_record,
+        "build_copy_adjustments": adjusted,
         "toolchain": {"std_source_sha256": tree_hash(Path(run(["rustc", "+" + cfg["toolchain"], "--print", "sysroot"]).stdout.decode().strip()) / "lib/rustlib/src/rust"),
                       "gcc_sha256": sha256_file(cfg["aros_gcc"]),
                       "sdk_sha256": tree_hash(cfg["aros_sdk"]),
