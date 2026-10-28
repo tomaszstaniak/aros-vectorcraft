@@ -4,3 +4,4 @@
 0004-AROS-native-host-on-egui-aros-one-Intuition-window-C.patch
 0005-AROS-let-every-worker-thread-end-before-the-program-.patch
 0006-AROS-host-release-the-UI-thread-s-caches-at-exit-pla.patch
+0007-AROS-host-optional-frame-cost-log-VECTORCRAFT_FRAME_.patch
