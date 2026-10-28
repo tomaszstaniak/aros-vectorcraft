@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 17:49:07 +0100
+Subject: [PATCH] AROS host: release the UI thread's caches at exit; plain
+ quotes in launch errors
+
+The AROS console shows UTF-8 typographic quotes as Latin-1 garbage.
+---
+ apps/vectorcraft-aros/src/launch.rs | 4 ++--
+ apps/vectorcraft-aros/src/native.rs | 3 +++
+ 2 files changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/apps/vectorcraft-aros/src/launch.rs b/apps/vectorcraft-aros/src/launch.rs
+index 0085b764aecd43ee346e6d7bbf6e061e1dc1cb46..e301c7cb9110c7a87f57a88b346b12d821fb3120 100644
+--- a/apps/vectorcraft-aros/src/launch.rs
++++ b/apps/vectorcraft-aros/src/launch.rs
+@@ -15,7 +15,7 @@ impl Mode {
+             "CPU" => Ok(Self::Cpu),
+             "AUTO" => Ok(Self::Auto),
+             "GPU" => Ok(Self::Gpu),
+-            _ => Err(format!("{key}: unknown value \u{201c}{value}\u{201d}; expected CPU, AUTO or GPU")),
++            _ => Err(format!("{key}: unknown value \"{value}\"; expected CPU, AUTO or GPU")),
+         }
+     }
+ 
+@@ -63,7 +63,7 @@ pub fn parse(args: &[String], tooltypes: &[String]) -> Result<Launch, String> {
+             }
+             "--help" | "-h" => out.help = true,
+             "--version" | "-V" => out.version = true,
+-            _ if arg.starts_with("--") => return Err(format!("unknown option \u{201c}{arg}\u{201d}; see --help")),
++            _ if arg.starts_with("--") => return Err(format!("unknown option \"{arg}\"; see --help")),
+             _ => out.files.push(arg.clone()),
+         }
+     }
+diff --git a/apps/vectorcraft-aros/src/native.rs b/apps/vectorcraft-aros/src/native.rs
+index 8e14995dd2f2729c184b55333c49ddb3d99be04b..28188c88fb429df2fbd61eb5947ae9dc59b9bbc3 100644
+--- a/apps/vectorcraft-aros/src/native.rs
++++ b/apps/vectorcraft-aros/src/native.rs
+@@ -160,6 +160,9 @@ pub fn main() -> std::process::ExitCode {
+     prefs::save_prefs(&host.app);
+     vectorcraft_ui_egui::background::wait_all(&mut host.app);
+     drop(host);
++    // Worker threads owned by the UI thread's caches (Layers thumbnails, font samples) end when
++    // their channels close; thread-local values of the main task are not dropped before exit.
++    vectorcraft_ui_egui::graphics::release_thread_caches();
+     line("shutdown: complete");
+     match result {
+         Ok(()) => std::process::ExitCode::SUCCESS,

@@ -2,3 +2,5 @@
 0002-AROS-treat-file-ownership-and-permissions-as-on-non-.patch
 0003-AROS-platform-crate-FONTS-as-the-font-folder-no-DOS-.patch
 0004-AROS-native-host-on-egui-aros-one-Intuition-window-C.patch
+0005-AROS-let-every-worker-thread-end-before-the-program-.patch
+0006-AROS-host-release-the-UI-thread-s-caches-at-exit-pla.patch

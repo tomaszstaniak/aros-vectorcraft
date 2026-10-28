@@ -34,7 +34,7 @@ SETTINGS = {
     "aros_strip": ("VECTORCRAFT_AROS_STRIP", None, "strip from the same toolchain (optional)"),
     "aros_sdk": ("VECTORCRAFT_AROS_SDK", None, "native ABI-matched C SDK used as --sysroot"),
     "rust_aros": ("VECTORCRAFT_RUST_AROS", None, "rust-aros Git checkout (target template, libc-aros)"),
-    "rust_aros_commit": ("VECTORCRAFT_RUST_AROS_COMMIT", "b0603070b10bdd3d71b8c83b23a2f1ff1b2e7eb2",
+    "rust_aros_commit": ("VECTORCRAFT_RUST_AROS_COMMIT", "da569a68146b404de3e832f69217fa51ad719a22",
                          "rust-aros commit whose target template and libc-aros are used"),
     "aros_src": ("VECTORCRAFT_AROS_SRC", None, "AROS Git checkout holding aros_src_commit; read-only source of the pthread link library "
                  "(v11: deadwood2/AROS; aarch64: mainline)"),
