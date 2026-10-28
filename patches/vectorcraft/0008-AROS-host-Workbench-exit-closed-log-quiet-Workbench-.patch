@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 20:46:14 +0100
+Subject: [PATCH] AROS host: Workbench exit, closed log, quiet Workbench start,
+ safe Open pattern
+
+- The main task changes to its own directory first (std::env::set_current_dir(".")): the -nix C library of ABIv11 restores the directory saved by the first chdir at exit, whichever task made it, and a Workbench start then had its lock unlocked twice (crash in UnLock under __startup_entry at exit).
+- The log file is closed at shutdown; an open file kept in a static held the program drawer.
+- A Workbench start writes nothing to stderr (it opened a console window).
+- asl.library copies the pattern into a 257-byte string gadget whose initial text Intuition copies without a bound; VectorCraft's Open pattern is about 300 characters and overwrote memory. Patterns longer than 255 characters become #?.
+- A Workbench argument without a lock is taken by name, and a name that is not UTF-8 is shown in the error.
+---
+ apps/vectorcraft-aros/src/native.rs | 51 ++++++++++++++++++++++-------
+ crates/aros-platform/c/platform.c   |  7 ++++
+ crates/aros-platform/src/lib.rs     |  6 +++-
+ 3 files changed, 51 insertions(+), 13 deletions(-)
+
+diff --git a/apps/vectorcraft-aros/src/native.rs b/apps/vectorcraft-aros/src/native.rs
+index 00e0c5d240ceac124a9794f6eb2b9142313da552..7b394f114e21ad530bec0b4d19097ede6c208322 100644
+--- a/apps/vectorcraft-aros/src/native.rs
++++ b/apps/vectorcraft-aros/src/native.rs
+@@ -26,23 +26,36 @@ const TARGET: &str = match option_env!("VECTORCRAFT_BUILD_TARGET") {
+ };
+ 
+ // ---------------------------------------------------------------------------------------------
+-// Log: VectorCraft.log in the settings folder (stderr too, for Shell starts).
++// Log: VectorCraft.log in the settings folder, and stderr for Shell starts (a Workbench start has
++// none: writing there would open a console window).
+ 
+-static LOG: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
++static LOG: Mutex<Option<std::fs::File>> = Mutex::new(None);
++static SHELL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+ 
+ fn line(text: &str) {
+-    eprintln!("{text}");
+-    if let Some(file) = LOG.get_or_init(|| {
+-        let dir = std::env::var_os("VECTORCRAFT_CONFIG_DIR")?;
+-        let path = std::path::Path::new(&dir).join("VectorCraft.log");
+-        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(Mutex::new)
+-    }) {
+-        let mut f = file.lock().unwrap_or_else(|p| p.into_inner());
++    if SHELL.load(std::sync::atomic::Ordering::Relaxed) {
++        eprintln!("{text}");
++    }
++    if let Some(f) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+         let _ = writeln!(f, "{text}");
+         let _ = f.flush();
+     }
+ }
+ 
++/// Open the log in the settings folder (after VECTORCRAFT_CONFIG_DIR is set).
++fn open_log() {
++    let Some(dir) = std::env::var_os("VECTORCRAFT_CONFIG_DIR") else { return };
++    let dir = std::path::Path::new(&dir);
++    let _ = std::fs::create_dir_all(dir);
++    let file = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("VectorCraft.log")).ok();
++    *LOG.lock().unwrap_or_else(|p| p.into_inner()) = file;
++}
++
++/// Close the log: an open file would keep the program's drawer "in use" after the program ends.
++fn close_log() {
++    LOG.lock().unwrap_or_else(|p| p.into_inner()).take();
++}
++
+ struct Logger;
+ static LOGGER: Logger = Logger;
+ impl log::Log for Logger {
+@@ -69,11 +82,18 @@ fn fail(message: &str, workbench: bool) -> std::process::ExitCode {
+ 
+ pub fn main() -> std::process::ExitCode {
+     platform::quiet_dos();
++    // -nix C library (ABIv11): the first chdir saves the directory to restore at exit, whichever
++    // task makes it. Made here, before any worker can, so that the Workbench start's own lock is
++    // not unlocked by the library and then again by the Workbench startup code.
++    if let Err(e) = std::env::set_current_dir(".") {
++        return fail(&format!("cannot keep the start directory: {e}"), true);
++    }
+     let startup = match platform::startup(&launch::TOOLTYPES) {
+         Ok(s) => s,
+         Err(e) => return fail(&e, true),
+     };
+     let wb = startup.workbench;
++    SHELL.store(!wb, std::sync::atomic::Ordering::Relaxed);
+     let args: Vec<String> = if wb { Vec::new() } else { std::env::args().skip(1).collect() };
+     let launch = match launch::parse(&args, &startup.tooltypes) {
+         Ok(l) => l,
+@@ -94,6 +114,7 @@ pub fn main() -> std::process::ExitCode {
+         Err(e) => return fail(&format!("cannot find the program's drawer: {e}"), wb),
+     };
+     platform::set_default_config_dir(&data);
++    open_log();
+     if log::set_logger(&LOGGER).is_ok() {
+         log::set_max_level(log::LevelFilter::Info);
+     }
+@@ -168,10 +189,12 @@ pub fn main() -> std::process::ExitCode {
+     // their channels close; thread-local values of the main task are not dropped before exit.
+     vectorcraft_ui_egui::graphics::release_thread_caches();
+     line("shutdown: complete");
+-    match result {
++    let code = match result {
+         Ok(()) => std::process::ExitCode::SUCCESS,
+         Err(e) => fail(&e.to_string(), wb),
+-    }
++    };
++    close_log();
++    code
+ }
+ 
+ /// One line for the log: requested and chosen renderer, the reason for a fallback, and for
+@@ -282,7 +305,11 @@ type SharedWindow = Rc<RefCell<Option<egui_aros::WindowHandle>>>;
+ fn pattern(pick: &FilePick) -> String {
+     let mut exts: Vec<&str> = pick.filters.iter().flat_map(|(_, e)| e.iter().map(String::as_str)).collect();
+     exts.dedup();
+-    if exts.is_empty() || exts.contains(&"*") { "#?".into() } else { format!("#?.({})", exts.join("|")) }
++    let pattern = if exts.is_empty() || exts.contains(&"*") { "#?".into() } else { format!("#?.({})", exts.join("|")) };
++    // asl.library copies the pattern into a 257-byte string gadget, and Intuition's string class
++    // copies initial text without a length check: a longer pattern (VectorCraft's Open list is
++    // about 300 characters) overwrites memory. Show every file instead.
++    if pattern.len() > 255 { "#?".into() } else { pattern }
+ }
+ 
+ /// The requester's starting drawer as a DOS name.
+diff --git a/crates/aros-platform/c/platform.c b/crates/aros-platform/c/platform.c
+index 141e602aaba12beee5046d026f783e3fa738dcd8..c8deb009a1f6488dbbf2b7f2a2bf2869bb054136 100644
+--- a/crates/aros-platform/c/platform.c
++++ b/crates/aros-platform/c/platform.c
+@@ -25,6 +25,13 @@ void vc_quiet_dos(void) {
+ static int wb_path(int index, char *out, int cap) {
+     if (!WBenchMsg || index < 0 || index >= WBenchMsg->sm_NumArgs) return 0;
+     struct WBArg *arg = &WBenchMsg->sm_ArgList[index];
++    /* No lock: wa_Name is a full name already (a volume or device) or relative to nothing. */
++    if (!arg->wa_Lock) {
++        size_t len = strlen((const char *)arg->wa_Name);
++        if (len >= (size_t)cap) return -1;
++        memcpy(out, arg->wa_Name, len + 1);
++        return 1;
++    }
+     if (!NameFromLock(arg->wa_Lock, (STRPTR)out, cap)) return -1;
+     return AddPart((STRPTR)out, (CONST_STRPTR)arg->wa_Name, cap) ? 1 : -1;
+ }
+diff --git a/crates/aros-platform/src/lib.rs b/crates/aros-platform/src/lib.rs
+index 9d6939a9e07538f0962cbc48d0bbfec5eb7760f5..887c1c047212f9c2794f9339af78510e1cc27700 100644
+--- a/crates/aros-platform/src/lib.rs
++++ b/crates/aros-platform/src/lib.rs
+@@ -30,7 +30,11 @@ mod native {
+         }
+         let end = bytes.iter().position(|&b| b == 0).ok_or("unterminated DOS result")?;
+         bytes.truncate(end);
+-        String::from_utf8(bytes).map(Some).map_err(|_| "DOS path is not UTF-8".into())
++        String::from_utf8(bytes).map(Some).map_err(|e| {
++            // Names are bytes on AROS (often ISO 8859-1); show the name so the user knows which.
++            let name: String = e.into_bytes().iter().map(|&b| b as char).collect();
++            format!("the name \"{name}\" is not UTF-8 text; this program needs UTF-8 file and drawer names")
++        })
+     }
+ }
+ 
