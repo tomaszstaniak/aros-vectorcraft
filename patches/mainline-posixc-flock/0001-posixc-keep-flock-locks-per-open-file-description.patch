@@ -1,0 +1,1023 @@
+From a265e734459ef4cf2762fd30e6467c5b967603d7 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Wed, 28 Oct 2026 18:20:27 +0100
+Subject: [PATCH] posixc: keep flock() locks per open file description
+
+flock() implemented a lock as a public exec SignalSemaphore named
+FLOCK(path). Semaphores belong to a task, so:
+
+- a second open() of a locked file in the same task got the lock again,
+  because the semaphore nests for its owner;
+- LOCK_UN released the semaphore whatever the descriptor held, so
+  unlocking a descriptor without a lock removed another descriptor's lock;
+- nothing released a lock when its descriptor was closed or the program
+  ended, so the file stayed locked until posixc.library was expunged.
+
+Locks now belong to the open file description (fcb), as in BSD and
+POSIX: a registry in the library base lists the locked files with the
+descriptions holding a lock and the requests waiting for one. close()
+and closedir() release the lock when the last descriptor of a
+description goes, which also covers program exit (__exit_fd closes all
+descriptors). LOCK_UN only removes the lock of the given description. A
+conflicting request from another description fails with EWOULDBLOCK
+under LOCK_NB and waits otherwise, on a private signal bit; when every
+conflicting lock was obtained by the calling task, a blocking request
+fails with EDEADLK instead of hanging the task for good. Conversions
+between shared and exclusive keep BSD behaviour.
+
+The flock test opened its file with O_CREAT alone, which posixc rejects
+with EINVAL, so it never reached flock(); it now opens the file
+O_RDWR | O_CREAT. A new test, flock_description, covers the three cases
+above, shared locks of two descriptions and conversions.
+---
+ compiler/crt/posixc/__fdesc.h                 |  13 +
+ compiler/crt/posixc/__posixc_intbase.h        |   5 +-
+ compiler/crt/posixc/close.c                   |   1 +
+ compiler/crt/posixc/closedir.c                |   1 +
+ compiler/crt/posixc/flock.c                   | 499 ++++++++++++------
+ developer/debug/test/crt/posixc/flock.c       |   4 +-
+ .../debug/test/crt/posixc/flock_description.c | 248 +++++++++
+ developer/debug/test/crt/posixc/mmakefile.src |   1 +
+ 8 files changed, 601 insertions(+), 171 deletions(-)
+ create mode 100644 developer/debug/test/crt/posixc/flock_description.c
+
+diff --git a/compiler/crt/posixc/__fdesc.h b/compiler/crt/posixc/__fdesc.h
+index 928f74b6a6..b7d7cb4a5d 100644
+--- a/compiler/crt/posixc/__fdesc.h
++++ b/compiler/crt/posixc/__fdesc.h
+@@ -11,6 +11,9 @@
+ 
+ #include <dos/dos.h>
+ #include <exec/semaphores.h>
++#include <exec/lists.h>
++
++struct __flock_file;
+ 
+ /* file control block - one per file handle */
+ typedef struct _fcb
+@@ -27,6 +30,13 @@ typedef struct _fcb
+        state and are not safe for concurrent use, so read/write serialise
+        on this. Initialised at fcb creation. */
+     struct SignalSemaphore io_lock;
++    /* flock(): an advisory lock belongs to the open file description, so it
++       is kept here and released when the last descriptor is closed. Guarded
++       by the flock registry lock (flock.c), not by io_lock. */
++    struct MinNode flock_node;          /* in the file's list of holders */
++    struct __flock_file *flock_file;    /* NULL when no lock is held */
++    struct Task *flock_task;            /* Task that obtained the lock */
++    int flock_mode;                     /* LOCK_SH or LOCK_EX */
+ } fcb;
+ 
+ #include <proto/exec.h>
+@@ -83,6 +93,9 @@ LONG __oflags2amode(int flags);
+ fdesc *__alloc_fdesc(void);
+ void __free_fdesc(fdesc *fdesc);
+ void __close_on_exec_fdescs(void);
++/* Release the flock() lock of a description whose last descriptor is
++   being closed (flock.c). */
++void __flock_release(fcb *f);
+ 
+ /* Resolve the operation hooks for a descriptor owned by another subsystem
+    (e.g. a bsdsocket.library socket) through fd.library.  Returns the hooks
+diff --git a/compiler/crt/posixc/__posixc_intbase.h b/compiler/crt/posixc/__posixc_intbase.h
+index c78454d2d7..05b8e2e3bf 100644
+--- a/compiler/crt/posixc/__posixc_intbase.h
++++ b/compiler/crt/posixc/__posixc_intbase.h
+@@ -27,6 +27,7 @@ struct __random_state;
+ struct __env_item;
+ struct _fdesc;
+ struct vfork_data;
++struct __flock_registry;
+ 
+ struct PosixCIntBase
+ {
+@@ -96,8 +97,8 @@ struct PosixCIntBase
+     int cd_changed;
+     BPTR cd_lock;
+ 
+-    /* flock.c */
+-    struct MinList _file_locks, *file_locks;
++    /* flock.c: registry shared by all bases of this library */
++    struct __flock_registry *flock_registry;
+ 
+     /* umask */
+     mode_t umask;
+diff --git a/compiler/crt/posixc/close.c b/compiler/crt/posixc/close.c
+index 93768964e9..96c3d35595 100644
+--- a/compiler/crt/posixc/close.c
++++ b/compiler/crt/posixc/close.c
+@@ -109,6 +109,7 @@
+         }
+ 
+         __fcb_unlock(fdesc->fcb);
++        __flock_release(fdesc->fcb);
+         FreeVec(fdesc->fcb);
+     }
+     else
+diff --git a/compiler/crt/posixc/closedir.c b/compiler/crt/posixc/closedir.c
+index 7da15fbd50..995163332c 100644
+--- a/compiler/crt/posixc/closedir.c
++++ b/compiler/crt/posixc/closedir.c
+@@ -67,6 +67,7 @@
+     {
+         UnLock(desc->fcb->handle);
+         __fcb_unlock(desc->fcb);
++        __flock_release(desc->fcb);
+         FreeVec(desc->fcb);
+     }
+     else
+diff --git a/compiler/crt/posixc/flock.c b/compiler/crt/posixc/flock.c
+index 7feabbdc84..03706322ac 100644
+--- a/compiler/crt/posixc/flock.c
++++ b/compiler/crt/posixc/flock.c
+@@ -13,20 +13,46 @@
+ #include <aros/symbolsets.h>
+ 
+ #include <errno.h>
++#include <stddef.h>
+ #include <string.h>
+ #include <fcntl.h>
+ 
+ #include "__fdesc.h"
+ #include "__posixc_intbase.h"
+ 
+-struct FlockNode
++/* One registry per library, shared by all its bases (see __init_flocks()).
++   fr_Lock guards the registry, every __flock_file and the flock_* fields
++   of every fcb. */
++struct __flock_registry
+ {
+-    struct Node node;
+-    struct SignalSemaphore *sem;
++    struct SignalSemaphore fr_Lock;
++    struct MinList fr_Files;
+ };
+ 
+-LONG AddToList(struct SignalSemaphore *sem);
+-void RemoveFromList(struct SignalSemaphore *sem);
++/* A file with at least one lock or one waiting request. */
++struct __flock_file
++{
++    struct Node ff_Node;            /* ln_Name: full path of the file */
++    struct MinList ff_Holders;      /* fcbs holding a lock (fcb->flock_node) */
++    struct MinList ff_Waiters;      /* struct __flock_waiter */
++    struct __flock_registry *ff_Registry;
++};
++
++/* A blocked request, on the waiting task's stack. */
++struct __flock_waiter
++{
++    struct MinNode fw_Node;
++    struct Task *fw_Task;
++    ULONG fw_SigMask;
++};
++
++#define HOLDER(n) ((fcb *)((UBYTE *)(n) - offsetof(fcb, flock_node)))
++
++static BOOL __flock_conflict(struct __flock_file *ff, fcb *f, int mode, BOOL *others);
++static void __flock_wake(struct __flock_file *ff);
++static void __flock_free_unused(struct __flock_file *ff);
++static char *__flock_name(fcb *f);
++static void __flock_drop(fcb *f);
+ 
+ /*****************************************************************************
+ 
+@@ -53,22 +79,40 @@ void RemoveFromList(struct SignalSemaphore *sem);
+         
+         LOCK_UN - Remove an existing lock from the file specified by fd.
+ 
+-        LOCK_EX operation blocks if there is a lock already placed on the
+-        file. LOCK_SH blocks if there is an exclusive lock already placed
++        LOCK_EX operation blocks if another description holds a lock on the
++        file. LOCK_SH blocks if another description holds an exclusive lock
+         on the file. If you want to do a non-blocking request, OR the
+         operation specifier with LOCK_NB constant. In this case flock() will
+         return -1 instead of blocking and set errno to EWOULDBLOCK.
+         
+-        Advisory locks created with flock() are shared among duplicated file
+-        descriptors.
+-        
++        A lock belongs to the open file description: descriptors made with
++        dup(), dup2() or inherited from vfork() share it, and any of them
++        can convert or remove it. A separate open() of the same file, in the
++        same process or another one, is a separate description whose locks
++        conflict with it. The lock is released when the last descriptor of
++        its description is closed, which includes the program's exit.
++
++        Calling flock() on a description that already holds a lock converts
++        it. A conversion from shared to exclusive that has to wait first
++        releases the shared lock; with LOCK_NB it fails and the shared lock
++        is kept.
++
+     INPUTS
+         fd - File descriptor of the file you want to place or remove lock from.
+         operation - Lock operation to be performed.
+ 
+     RESULT
+         0 on success, -1 on error. In case of error a global errno variable
+-        is set.
++        is set:
++
++        EBADF       - fd is not an open file descriptor.
++        EINVAL      - operation is not valid.
++        EWOULDBLOCK - LOCK_NB was given and the lock is held in a
++                      conflicting mode.
++        EDEADLK     - the request would block and every conflicting lock was
++                      obtained by the calling task through another
++                      description, so waiting could not end.
++        ENOLCK      - no memory or no free signal bit for the request.
+ 
+     NOTES
+         Locks placed with flock() are only advisory, they place no
+@@ -77,225 +121,346 @@ void RemoveFromList(struct SignalSemaphore *sem);
+     EXAMPLE
+ 
+     BUGS
+-        It's currently possible to remove lock placed by another process.
++        A blocked request cannot be interrupted. A file is identified by the
++        name its handler returns for the open handle (NameFromFH()). Locks
++        are kept per instance of posixc.library.
+ 
+     SEE ALSO
+ 
+     INTERNALS
+-        Since advisory locks semantics is equal to exec.library semaphores
+-        semantics, semaphores are used to implement locks. For a given file
+-        a semaphore named FLOCK(path) is created where path is a full path to
+-        the file. Locks held by a given process are stored in
+-        PosixCBase->file_locks and released during process exit.
++        exec.library semaphores cannot be used: they belong to a task, nest
++        for their owner and can only be released by it, while a flock()
++        lock belongs to an open file description. The library keeps a
++        registry of locked files, each with the descriptions (fcb) holding
++        a lock and the requests waiting for one. close() releases the lock
++        when the last descriptor of a description goes, and the descriptors
++        of a program are closed when it exits.
+ 
+ ******************************************************************************/
+ {
+-    fdesc *fdesc = __getfdesc(fd);
+-    char *buffer;
+-    int buffersize = 256;
+-    struct SignalSemaphore *sem;
++    struct PosixCIntBase *PosixCBase =
++        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
++    struct __flock_registry *reg = PosixCBase->flock_registry;
++    fdesc *desc = __getfdesc(fd);
++    int mode = operation & ~LOCK_NB;
++    struct Task *me = FindTask(NULL);
++    struct __flock_waiter waiter;
++    struct __flock_file *ff;
++    BYTE sigbit = -1;
++    char *name = NULL;
++    int error = 0;
++    fcb *f;
+ 
+     D(bug("flock(%d, %d)\n", fd, operation));
+-    if (!fdesc)
++    if (!desc)
+     {
+         errno = EBADF;
+         return -1;
+     }
+ 
+-    /* Sanity check */
+-    if(
+-        (operation & ~LOCK_NB) != LOCK_SH &&
+-        (operation & ~LOCK_NB) != LOCK_EX &&
+-        (operation & ~LOCK_NB) != LOCK_UN
+-    )
++    if (mode != LOCK_SH && mode != LOCK_EX && mode != LOCK_UN)
+     {
+         errno = EINVAL;
+         return -1;
+     }
+-        
+-    /* Get the full path of the flocked filesystem object */
+-    do
++
++    f = desc->fcb;
++
++    if (mode == LOCK_UN)
+     {
+-        if(!(buffer = AllocVec(buffersize, MEMF_ANY)))
++        ObtainSemaphore(&reg->fr_Lock);
++        __flock_drop(f);
++        ReleaseSemaphore(&reg->fr_Lock);
++        return 0;
++    }
++
++    /* Looked up before taking the registry lock: the handler is not called
++       with it held. */
++    name = __flock_name(f);
++    if (!name)
++        return -1;
++
++    ObtainSemaphore(&reg->fr_Lock);
++
++    ff = f->flock_file;
++    if (ff)
++    {
++        if (f->flock_mode == mode)
++            goto done;
++
++        if (mode == LOCK_SH)
+         {
+-            errno = __stdc_ioerr2errno(IoErr());
+-            return -1;
++            /* Downgrade: nothing can conflict */
++            f->flock_mode = LOCK_SH;
++            __flock_wake(ff);
++            goto done;
+         }
+ 
+-        __fcb_lock(fdesc->fcb);
+-        BOOL __nameok = NameFromFH(fdesc->fcb->handle, (STRPTR) ((IPTR) buffer + 6), buffersize - 7);
+-        __fcb_unlock(fdesc->fcb);
+-        if(__nameok)
+-            break;
+-        else if(IoErr() != ERROR_LINE_TOO_LONG)
++        /* Upgrade */
++        if (!__flock_conflict(ff, f, LOCK_EX, NULL))
+         {
+-            errno = __stdc_ioerr2errno(IoErr());
+-            FreeVec(buffer);
+-            return -1;
++            f->flock_mode = LOCK_EX;
++            f->flock_task = me;
++            goto done;
+         }
+-        FreeVec(buffer);
+-        buffersize *= 2;
+-    }
+-    while(TRUE);
+-    
+-    CopyMem("FLOCK(", buffer, strlen("FLOCK("));
+-    buffer[strlen(buffer) + 1] = '\0';
+-    buffer[strlen(buffer)] = ')';
+-
+-    D(bug("[flock] Semaphore name: %s\n", buffer));
+-
+-    /* Find semaphore named FLOCK(path), add a new one if not found any */
+-    Forbid();
+-    sem = FindSemaphore((STRPTR) buffer);
+-    if(!sem)
+-    {
+-        D(bug("[flock] Semaphore %s not found, creating a new one\n", buffer));
+-        sem = (struct SignalSemaphore*)
+-            AllocVec(sizeof(struct SignalSemaphore), MEMF_PUBLIC|MEMF_CLEAR);
+-        if(!sem)
++        if (operation & LOCK_NB)
+         {
+-            errno = ENOMEM;
+-            Permit();
+-            return -1;
++            error = EWOULDBLOCK;
++            goto done;
+         }
+-        sem->ss_Link.ln_Name = buffer;
+-        AddSemaphore(sem);
++        /* Drop the shared lock before waiting, as BSD does, so that two
++           descriptions upgrading at the same time do not wait on each
++           other. ff stays: it is used right below. */
++        Remove((struct Node *)&f->flock_node);
++        f->flock_file = NULL;
++        __flock_wake(ff);
+     }
+     else
+     {
+-        D(bug("[flock] Semaphore %s found, freeing buffer\n", buffer));
+-        FreeVec(buffer);
+-    }
+-    
+-    if(operation & LOCK_UN)
+-    {
+-        D(bug("[flock] Releasing semaphore %s\n", sem->ss_Link.ln_Name));
+-        ReleaseSemaphore(sem);
+-        RemoveFromList(sem);
+-        if(sem->ss_Owner == NULL && sem->ss_QueueCount == -1)
++        ff = (struct __flock_file *)FindName((struct List *)&reg->fr_Files, name);
++        if (!ff)
+         {
+-            D(bug("[flock] All locks unlocked, removing semaphore %s\n", sem->ss_Link.ln_Name));
+-            /* All locks for this file were unlocked, we don't need semaphore
+-             * anymore */
+-            RemSemaphore(sem);
+-            FreeVec(sem->ss_Link.ln_Name);
+-            FreeVec(sem);
+-            Permit();
+-            return 0;
++            ff = AllocVec(sizeof(struct __flock_file), MEMF_ANY | MEMF_CLEAR);
++            if (!ff)
++            {
++                error = ENOLCK;
++                goto done;
++            }
++            ff->ff_Node.ln_Name = name;
++            name = NULL;
++            NEWLIST(&ff->ff_Holders);
++            NEWLIST(&ff->ff_Waiters);
++            ff->ff_Registry = reg;
++            AddTail((struct List *)&reg->fr_Files, &ff->ff_Node);
+         }
+     }
+-    Permit();
+-    
+-    switch(operation & ~LOCK_NB)
++
++    for (;;)
+     {
+-        case LOCK_SH:
+-            D(bug("[flock] Obtaining shared lock\n"));
+-            if(operation & LOCK_NB)
+-            {
+-                if(!AttemptSemaphoreShared(sem))
+-                {
+-                    errno = EWOULDBLOCK;
+-                    return -1;
+-                }
+-            }
+-            else
+-                ObtainSemaphoreShared(sem);
+-            D(bug("[flock] Shared lock obtained\n"));
+-            AddToList(sem);
++        BOOL others = FALSE;
++
++        if (!__flock_conflict(ff, f, mode, &others))
++        {
++            AddTail((struct List *)&ff->ff_Holders, (struct Node *)&f->flock_node);
++            f->flock_file = ff;
++            f->flock_mode = mode;
++            f->flock_task = me;
++            break;
++        }
++        if (operation & LOCK_NB)
++        {
++            error = EWOULDBLOCK;
+             break;
+-        case LOCK_EX:
+-            D(bug("[flock] Obtaining exclusive lock\n"));
+-            if(operation & LOCK_NB)
++        }
++        /* Only this task could release the conflicting locks, and it is
++           about to wait: a single-threaded program would hang for good. */
++        if (!others)
++        {
++            error = EDEADLK;
++            break;
++        }
++
++        /* A private signal: SIGF_SINGLE belongs to exec's semaphores, and a
++           late wakeup must not reach a task waiting in ObtainSemaphore(). */
++        if (sigbit == -1)
++        {
++            sigbit = AllocSignal(-1);
++            if (sigbit == -1)
+             {
+-                if(!AttemptSemaphore(sem))
+-                {
+-                    errno = EWOULDBLOCK;
+-                    return -1;
+-                }
++                error = ENOLCK;
++                break;
+             }
+-            else
+-                ObtainSemaphore(sem);
+-            D(bug("[flock] Exclusive lock obtained\n"));
+-            AddToList(sem);
+-            break;
++            waiter.fw_Task = me;
++            waiter.fw_SigMask = 1UL << sigbit;
++        }
++        SetSignal(0, waiter.fw_SigMask);
++        AddTail((struct List *)&ff->ff_Waiters, (struct Node *)&waiter.fw_Node);
++
++        D(bug("[flock] Waiting for %s\n", ff->ff_Node.ln_Name));
++        ReleaseSemaphore(&reg->fr_Lock);
++        Wait(waiter.fw_SigMask);
++        ObtainSemaphore(&reg->fr_Lock);
++        Remove((struct Node *)&waiter.fw_Node);
++    }
++
++    if (error)
++        __flock_free_unused(ff);
++
++done:
++    ReleaseSemaphore(&reg->fr_Lock);
++
++    if (sigbit != -1)
++    {
++        /* No one signals it any more: the request left the list above */
++        SetSignal(0, waiter.fw_SigMask);
++        FreeSignal(sigbit);
++    }
++    FreeVec(name);
++
++    if (error)
++    {
++        D(bug("[flock] Failed with %d\n", error));
++        errno = error;
++        return -1;
+     }
+     return 0;
+ }
+ 
+-LONG AddToList(struct SignalSemaphore *sem)
++/* Is a lock in mode on ff blocked by a description other than f? *others is
++   set when a conflicting lock was obtained by another task. */
++static BOOL __flock_conflict(struct __flock_file *ff, fcb *f, int mode, BOOL *others)
+ {
+-    struct PosixCIntBase *PosixCBase =
+-        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+-    struct FlockNode *node;
+-    node = AllocMem(sizeof(struct FlockNode), MEMF_ANY | MEMF_CLEAR);
+-    if(!node)
+-        return -1;
+-    node->sem = sem;
+-    AddHead((struct List *)PosixCBase->file_locks, (struct Node*) node);
+-    return 0;
++    struct Task *me = FindTask(NULL);
++    struct MinNode *n;
++    BOOL conflict = FALSE;
++
++    ForeachNode(&ff->ff_Holders, n)
++    {
++        fcb *h = HOLDER(n);
++
++        if (h == f)
++            continue;
++        if (mode == LOCK_EX || h->flock_mode == LOCK_EX)
++        {
++            conflict = TRUE;
++            if (h->flock_task != me && others)
++                *others = TRUE;
++        }
++    }
++    return conflict;
+ }
+ 
+-void RemoveFromList(struct SignalSemaphore *sem)
++/* Wake every waiting request on ff; each one checks again. A woken request
++   stays in the list until it removes itself, which keeps ff from being freed
++   while it still refers to it. Registry lock held. */
++static void __flock_wake(struct __flock_file *ff)
+ {
+-    struct PosixCIntBase *PosixCBase =
+-        (struct PosixCIntBase *)__aros_getbase_PosixCBase();
+-    struct FlockNode *varNode;
+-    struct Node *tmpNode;
+-    
+-    ForeachNodeSafe(PosixCBase->file_locks, varNode, tmpNode)
++    struct __flock_waiter *w;
++
++    ForeachNode(&ff->ff_Waiters, w)
++        Signal(w->fw_Task, w->fw_SigMask);
++}
++
++/* Registry lock held. */
++static void __flock_free_unused(struct __flock_file *ff)
++{
++    if (IsListEmpty((struct List *)&ff->ff_Holders) &&
++        IsListEmpty((struct List *)&ff->ff_Waiters))
++    {
++        D(bug("[flock] No locks left on %s\n", ff->ff_Node.ln_Name));
++        Remove(&ff->ff_Node);
++        FreeVec(ff->ff_Node.ln_Name);
++        FreeVec(ff);
++    }
++}
++
++/* Full path of the file or directory of f, or NULL with errno set. */
++static char *__flock_name(fcb *f)
++{
++    ULONG size = 256;
++    char *buffer;
++    BOOL ok;
++
++    for (;;)
+     {
+-        if(varNode->sem == sem)
++        buffer = AllocVec(size, MEMF_ANY);
++        if (!buffer)
+         {
+-            Remove((struct Node*) varNode);
+-            FreeMem(varNode, sizeof(struct FlockNode));
+-            break;
++            errno = ENOLCK;
++            return NULL;
+         }
++
++        __fcb_lock(f);
++        if (f->privflags & _FCB_ISDIR)
++            ok = NameFromLock(f->handle, (STRPTR)buffer, size);
++        else
++            ok = NameFromFH(f->handle, (STRPTR)buffer, size);
++        __fcb_unlock(f);
++        if (ok)
++            return buffer;
++
++        FreeVec(buffer);
++        if (IoErr() != ERROR_LINE_TOO_LONG)
++        {
++            errno = __stdc_ioerr2errno(IoErr());
++            return NULL;
++        }
++        size *= 2;
+     }
+ }
+ 
+-/* __init_flocks is called during library init.
+-   PosixCBase->file_locks will be initialized here and then copied
+-   in all libbases for each open of the library.
+-   This means that a global file_locks list is used, this is needed as flocks
+-   are used for locking between different processes.
+-*/
++/* Remove the lock of description f, if it holds one. Registry lock held. */
++static void __flock_drop(fcb *f)
++{
++    struct __flock_file *ff = f->flock_file;
++
++    if (ff)
++    {
++        D(bug("[flock] Releasing %s\n", ff->ff_Node.ln_Name));
++        Remove((struct Node *)&f->flock_node);
++        f->flock_file = NULL;
++        f->flock_task = NULL;
++        f->flock_mode = 0;
++        __flock_wake(ff);
++        __flock_free_unused(ff);
++    }
++}
++
++/* Called by close() and closedir() when the last descriptor of f goes. No
++   other descriptor of f is left, so no flock() can change f meanwhile and
++   flock_file can be read before the lock is taken; the registry is the one
++   that holds the lock, which matters only when a descriptor table crossed
++   library instances (vfork). */
++void __flock_release(fcb *f)
++{
++    struct __flock_registry *reg;
++
++    if (!f->flock_file)
++        return;
++
++    reg = f->flock_file->ff_Registry;
++    ObtainSemaphore(&reg->fr_Lock);
++    __flock_drop(f);
++    ReleaseSemaphore(&reg->fr_Lock);
++}
++
++/* __init_flocks is called during library init. The registry pointer is
++   copied into every base opened from it, so all programs using this
++   library share one registry: locks are between processes. */
+ int __init_flocks(struct PosixCIntBase *PosixCBase)
+ {
+-    PosixCBase->file_locks = AllocMem(sizeof(struct MinList), MEMF_PUBLIC);
+-    NEWLIST(PosixCBase->file_locks);
++    struct __flock_registry *reg;
++
++    reg = AllocMem(sizeof(struct __flock_registry), MEMF_PUBLIC | MEMF_CLEAR);
++    if (!reg)
++        return 0;
++    InitSemaphore(&reg->fr_Lock);
++    NEWLIST(&reg->fr_Files);
++    PosixCBase->flock_registry = reg;
+ 
+-    D(bug("[flock] Initialized lock list at 0x%p\n", PosixCBase->file_locks));
++    D(bug("[flock] Initialized lock registry at 0x%p\n", reg));
+ 
+     return 1;
+ }
+ 
+-/* This function is called once before root libbase would be freed.
+-   This function will be called when no other program has posixc.library open
+-   so no protection should be needed.
+-*/
++/* Called once before the root libbase is freed, when no program has the
++   library open: every descriptor, and so every lock, is gone. */
+ int __unlock_flocks(struct PosixCIntBase *PosixCBase)
+ {
+-    struct FlockNode *lock;
+-    struct SignalSemaphore *sem;
++    struct __flock_registry *reg = PosixCBase->flock_registry;
++    struct __flock_file *ff;
+ 
+-    D(bug("[flock] Freeing lock list at 0x%p\n", PosixCBase->file_locks));
++    if (!reg)
++        return TRUE;
+ 
+-    while ((lock = (struct FlockNode *) REMHEAD(PosixCBase->file_locks)))
++    while ((ff = (struct __flock_file *)REMHEAD(&reg->fr_Files)))
+     {
+-        sem = lock->sem;
+-        ReleaseSemaphore(sem);
+-        FreeMem(lock, sizeof(struct FlockNode));
+-
+-        if (sem->ss_Owner != NULL || sem->ss_QueueCount != -1)
+-            bug("[flock] Freeing locked semaphore!");
+-
+-        D(bug("[flock] removing semaphore %s\n", sem->ss_Link.ln_Name));
+-        RemSemaphore(sem);
+-        FreeVec(sem->ss_Link.ln_Name);
+-        FreeVec(sem);
++        bug("[flock] Lock registry not empty at expunge: %s\n", ff->ff_Node.ln_Name);
++        FreeVec(ff->ff_Node.ln_Name);
++        FreeVec(ff);
+     }
+-    FreeMem(PosixCBase->file_locks, sizeof(struct MinList));
+-    PosixCBase->file_locks = NULL;
++    FreeMem(reg, sizeof(struct __flock_registry));
++    PosixCBase->flock_registry = NULL;
+     return TRUE;
+ }
+ 
+diff --git a/developer/debug/test/crt/posixc/flock.c b/developer/debug/test/crt/posixc/flock.c
+index bfb4e5c4ee..7607ca6671 100644
+--- a/developer/debug/test/crt/posixc/flock.c
++++ b/developer/debug/test/crt/posixc/flock.c
+@@ -1,5 +1,5 @@
+ /*
+-    Copyright (C) 1995-2014, The AROS Development Team. All rights reserved.
++    Copyright (C) 1995-2026, The AROS Development Team. All rights reserved.
+ */
+ 
+ #include <sys/file.h>
+@@ -61,7 +61,7 @@ LONG entry()
+ int main()
+ {
+     tmpname = mktemp("T:flockXXXXXX");
+-    int fd = open(tmpname, O_CREAT);
++    int fd = open(tmpname, O_RDWR | O_CREAT, 0644);
+     TEST((fd != -1));
+ 
+     TEST((flock(fd, LOCK_SH|LOCK_NB) == 0));
+diff --git a/developer/debug/test/crt/posixc/flock_description.c b/developer/debug/test/crt/posixc/flock_description.c
+new file mode 100644
+index 0000000000..3211ee86b0
+--- /dev/null
++++ b/developer/debug/test/crt/posixc/flock_description.c
+@@ -0,0 +1,248 @@
++/*
++    Copyright (C) 2026, The AROS Development Team. All rights reserved.
++
++    flock() locks belong to the open file description: a second open() of the
++    same file conflicts with the first, also in the same task; LOCK_UN only
++    removes the lock of the given description; closing the last descriptor
++    of a description, or the exit of the program, releases its lock.
++
++    Another process is the program itself, started through the Shell with an
++    argument: "try FILE" and "trysh FILE" report with their return code
++    whether an exclusive or shared non-blocking lock could be obtained (and
++    release it again), "hold FILE" locks FILE and exits without unlocking or
++    closing it.
++
++    Every case uses its own file in RAM:, named after this task. An existing
++    file is refused, and only the files created here are deleted. A case does
++    not unlock a lock it cannot be sure to hold, so that a library with the
++    old behaviour runs to the end.
++*/
++
++#include <proto/exec.h>
++#include <proto/dos.h>
++#include <dos/dostags.h>
++
++#include <sys/file.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "test.h"
++
++#define CHILD_GOT       0
++#define CHILD_BLOCKED   5
++#define CHILD_ERROR     10
++
++#define CASES 6
++
++static char self[512];
++static char files[CASES][64];
++static BOOL created[CASES];
++static int failures;
++
++static void check(BOOL ok, const char *what)
++{
++    printf("%s: %s\n", ok ? "pass" : "FAIL", what);
++    if (!ok)
++        failures++;
++}
++
++static int child_main(const char *op, const char *file)
++{
++    int fd = open(file, O_RDONLY);
++
++    if (fd == -1)
++        return CHILD_ERROR;
++
++    if (!strcmp(op, "hold"))
++        return flock(fd, LOCK_EX | LOCK_NB) == 0 ? CHILD_GOT : CHILD_ERROR;
++
++    if (flock(fd, (!strcmp(op, "trysh") ? LOCK_SH : LOCK_EX) | LOCK_NB) == 0)
++    {
++        flock(fd, LOCK_UN);
++        close(fd);
++        return CHILD_GOT;
++    }
++    close(fd);
++    return errno == EWOULDBLOCK ? CHILD_BLOCKED : CHILD_ERROR;
++}
++
++static LONG child(const char *op, int c)
++{
++    char cmd[700];
++
++    snprintf(cmd, sizeof(cmd), "\"%s\" %s \"%s\"", self, op, files[c]);
++    return SystemTags((CONST_STRPTR)cmd, SYS_Output, Output(), TAG_END);
++}
++
++static int create_file(int c)
++{
++    int fd;
++
++    snprintf(files[c], sizeof(files[c]), "RAM:flock-description-%lx-%d",
++             (unsigned long)(IPTR)FindTask(NULL), c);
++    fd = open(files[c], O_RDWR | O_CREAT | O_EXCL, 0644);
++    if (fd == -1)
++    {
++        printf("FAIL: cannot create %s (exists or error %d)\n", files[c], errno);
++        failures++;
++        return -1;
++    }
++    created[c] = TRUE;
++    return fd;
++}
++
++static int reopen(int c)
++{
++    return open(files[c], O_RDONLY);
++}
++
++/* Two descriptions of one file in one task */
++static void case_same_task(void)
++{
++    int fd1 = create_file(0), fd2;
++
++    if (fd1 == -1)
++        return;
++    fd2 = reopen(0);
++    check(fd2 != -1, "same task: second open");
++    check(flock(fd1, LOCK_EX) == 0, "same task: exclusive lock on first descriptor");
++    errno = 0;
++    check(flock(fd2, LOCK_EX | LOCK_NB) == -1 && errno == EWOULDBLOCK,
++          "same task: exclusive LOCK_NB on second descriptor fails with EWOULDBLOCK");
++    errno = 0;
++    check(flock(fd2, LOCK_SH | LOCK_NB) == -1 && errno == EWOULDBLOCK,
++          "same task: shared LOCK_NB on second descriptor fails with EWOULDBLOCK");
++    errno = 0;
++    check(flock(fd2, LOCK_EX) == -1 && errno == EDEADLK,
++          "same task: blocking exclusive lock on second descriptor fails with EDEADLK");
++    close(fd2);
++    close(fd1);
++}
++
++/* LOCK_UN on a descriptor that holds no lock */
++static void case_unlock_other(void)
++{
++    int fd1 = create_file(1), fd2;
++
++    if (fd1 == -1)
++        return;
++    fd2 = reopen(1);
++    check(flock(fd1, LOCK_EX) == 0, "unlock: exclusive lock on first descriptor");
++    check(flock(fd2, LOCK_UN) == 0, "unlock: LOCK_UN on second descriptor succeeds");
++    check(child("try", 1) == CHILD_BLOCKED,
++          "unlock: another process is still refused afterwards");
++    close(fd2);
++    close(fd1);
++}
++
++/* Closing releases the lock once the last descriptor of the description is
++   gone */
++static void case_close(void)
++{
++    int fd1 = create_file(2), fd3;
++
++    if (fd1 == -1)
++        return;
++    check(flock(fd1, LOCK_EX) == 0, "close: exclusive lock");
++    fd3 = dup(fd1);
++    check(fd3 != -1, "close: dup");
++    close(fd1);
++    check(child("try", 2) == CHILD_BLOCKED,
++          "close: lock kept while a dup()ed descriptor is open");
++    close(fd3);
++    check(child("try", 2) == CHILD_GOT,
++          "close: lock released when the last descriptor is closed");
++}
++
++/* Program exit releases the lock */
++static void case_exit(void)
++{
++    int fd1 = create_file(3);
++
++    if (fd1 == -1)
++        return;
++    check(child("hold", 3) == CHILD_GOT, "exit: another process locked the file and exited");
++    errno = 0;
++    check(flock(fd1, LOCK_EX | LOCK_NB) == 0, "exit: lock released by the exit");
++    close(fd1);
++}
++
++/* Shared locks of two descriptions */
++static void case_shared(void)
++{
++    int fd1 = create_file(4), fd2;
++
++    if (fd1 == -1)
++        return;
++    fd2 = reopen(4);
++    check(flock(fd1, LOCK_SH) == 0, "shared: first descriptor");
++    check(flock(fd2, LOCK_SH | LOCK_NB) == 0, "shared: second descriptor");
++    check(child("trysh", 4) == CHILD_GOT, "shared: another process gets a shared lock");
++    check(child("try", 4) == CHILD_BLOCKED, "shared: another process is refused an exclusive lock");
++    check(flock(fd1, LOCK_UN) == 0, "shared: unlock first descriptor");
++    check(child("try", 4) == CHILD_BLOCKED, "shared: second descriptor still holds its lock");
++    check(flock(fd2, LOCK_UN) == 0, "shared: unlock second descriptor");
++    check(child("try", 4) == CHILD_GOT, "shared: file free after both unlocks");
++    close(fd2);
++    close(fd1);
++}
++
++/* Converting the lock of one description */
++static void case_convert(void)
++{
++    int fd1 = create_file(5);
++
++    if (fd1 == -1)
++        return;
++    check(flock(fd1, LOCK_SH) == 0, "convert: shared lock");
++    check(flock(fd1, LOCK_EX | LOCK_NB) == 0, "convert: upgrade to exclusive");
++    check(child("trysh", 5) == CHILD_BLOCKED, "convert: another process is refused a shared lock");
++    check(flock(fd1, LOCK_SH) == 0, "convert: downgrade to shared");
++    check(child("trysh", 5) == CHILD_GOT, "convert: another process gets a shared lock");
++    close(fd1);
++    check(child("try", 5) == CHILD_GOT, "convert: file free after close");
++}
++
++int main(int argc, char **argv)
++{
++    BPTR dir;
++    char name[256];
++
++    if (argc == 3)
++        return child_main(argv[1], argv[2]);
++
++    dir = GetProgramDir();
++    if (!dir || !NameFromLock(dir, (STRPTR)self, sizeof(self)) ||
++        !GetProgramName((STRPTR)name, sizeof(name)) ||
++        !AddPart((STRPTR)self, FilePart((CONST_STRPTR)name), sizeof(self)))
++    {
++        printf("FAIL: cannot find the program's own path\n");
++        return FAIL;
++    }
++
++    case_same_task();
++    case_unlock_other();
++    case_close();
++    case_exit();
++    case_shared();
++    case_convert();
++
++    cleanup();
++    printf("%d failure(s)\n", failures);
++    return failures ? FAIL : OK;
++}
++
++void cleanup(void)
++{
++    int c;
++
++    for (c = 0; c < CASES; c++)
++        if (created[c])
++        {
++            remove(files[c]);
++            created[c] = FALSE;
++        }
++}
+diff --git a/developer/debug/test/crt/posixc/mmakefile.src b/developer/debug/test/crt/posixc/mmakefile.src
+index fec70c4ecc..2213131089 100644
+--- a/developer/debug/test/crt/posixc/mmakefile.src
++++ b/developer/debug/test/crt/posixc/mmakefile.src
+@@ -13,6 +13,7 @@ POSIXCTESTFILES := \
+         fchmod \
+         fcntl \
+         flock \
++        flock_description \
+         getfsstat \
+         getpass \
+         ioctl_tty \
+-- 
+2.54.0 (Apple Git-157)
+

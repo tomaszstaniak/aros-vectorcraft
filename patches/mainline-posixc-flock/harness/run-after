@@ -1,0 +1,9 @@
+FailAt 1000
+Stack 200000
+MakeDir RAM:T
+Assign T: RAM:T
+MakeDir RESULTS:pcflock-1028-after3
+Version RAM:pf/posixc-after.library FULL >RESULTS:pcflock-1028-after3/version.txt
+RAM:pf/loadposixc RAM:pf/posixc-after.library RESULTS:pcflock-1028-after3/tests.txt "Execute RAM:pf/tests"
+Echo $RC >RESULTS:pcflock-1028-after3/loader.rc
+Echo done >RESULTS:pcflock-1028-after3/done.txt
