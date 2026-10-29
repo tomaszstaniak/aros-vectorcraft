@@ -37,6 +37,7 @@ Unpack the archive for your system anywhere writable and double-click VectorCraf
 - OpenGL: AROS One 1.3, ABIv11 2026.09 and mainline have only Mesa's software renderer, so `AUTO` uses CPU there. `GPU` works but draws about ten times slower than CPU: in an emulator one redraw took 15 to 30 seconds, so a click or key can take up to a minute to show. Hardware OpenGL drivers have not been tested.
 - Raspberry Pi: tested in an emulator only, not on a physical Pi. OpenGL has not been tested on Pi hardware, so `AUTO` uses CPU. `GPU` opens OpenGL; in the emulator (Mesa's software renderer) that stopped the whole system. Save your work before you try it.
 - On mainline AROS, the first use of OpenGL (`AUTO` or `GPU`) since the system started leaves the VectorCraft drawer in use until a reboot when the program was started from Workbench or from a Shell inside its drawer. Starts with `CPU` are not affected.
+- On ABIv11 2026.09 the drawer once stayed in use until a reboot after a session with CPU, GPU and AUTO starts from it; it did not happen again in later tests. If `Delete` says "object is in use", restart the system and delete it then.
 - Letters typed with a keymap other than ISO 8859-1 can arrive wrong; file and drawer names must be plain ASCII or UTF-8.
 - Clipboard text only. File > Print saves a PDF. No automatic updates. The automation server and plug-ins have not been tested on AROS.
 - `vectorcraft-cli` cannot write a file at the top of a volume named the AROS way (`RAM:x.png`); use `/RAM/x.png` or a drawer.
