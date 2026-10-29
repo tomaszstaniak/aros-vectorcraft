@@ -35,8 +35,10 @@ SDK, Cargo home (`deps/<target>/`) and build directory (`build/<target>/`).
     SDK of the Raspberry Pi system image of 2026-08-22, a mainline AROS checkout that contains
     `cc39c62f33d90b842540e79d5e47357590c014ac`, and a pomaros-hosted checkout at
     `3bc9359d439f9fb5655cf48924413ffe670931cc` (the C bridge of the AArch64 standard library).
-- A rust-aros checkout containing commit `b0603070b10bdd3d71b8c83b23a2f1ff1b2e7eb2`
-  (target templates and `libc-aros`).
+- The rust-aros files the release used (target templates, profiles, `libc-aros`, the std
+  patches): `sources/rust-aros-<commit>.tar.xz` in the source archive, one per rust-aros commit
+  in the local files (`rust_aros_commit`). These commits are on a rust-aros branch that is not
+  public yet; the archives are the published copy.
 - An egui-aros checkout containing the commit pinned in `upstreams.json`, with its upstream
   sources prepared by its own `python3 scripts/ea.py fetch`.
 
@@ -89,9 +91,11 @@ checkout. The mainline x86_64 target needs no `aros_src`.
    hashes, and checks that no symbol is left undefined. `--worktree` builds uncommitted files
    too and is recorded as such; such builds cannot be packaged. A build is not a runtime test.
 
-4. Commit this repository, then package each build and the sources:
+4. Commit this repository, then package each build and the sources. `APKG_PACK` names
+   arospkg's `tools/apkg-pack` (or `apkg-pack.pyz`), which writes each binary archive:
 
    ```
+   export APKG_PACK=/path/to/arospkg/tools/apkg-pack
    python3 scripts/package.py binary build/aros-x86_64-abiv11-pc/out/<id>
    python3 scripts/package.py binary build/aros-x86_64-abiv1-pc/out/<id>
    python3 scripts/package.py binary build/aros-aarch64-abiv1-raspi/out/<id>
@@ -100,8 +104,12 @@ checkout. The mainline x86_64 target needs no `aros_src`.
    ```
 
    `package.py` finds each target's local file by its `target`. It writes
-   `dist/VectorCraft-<version>-<target>.zip` and `dist/VectorCraft-<version>-source.zip` and
-   adds them to `dist/SHA256SUMS`. It refuses an existing or listed file, a dirty repository, a
+   `dist/VectorCraft-<release>-<target>.zip` and `dist/VectorCraft-<release>-source.zip`
+   (`release` in `release.json`) and adds them to `dist/SHA256SUMS`. Binary archives go
+   through `apkg-pack check`, `build` and `check` with the target's catalogue description from
+   `packaging/catalogue/`; it adds `.arospkg/manifest.toml` (read by `apkg-pack submit`) and
+   `VectorCraft/application.json` (read by `apkg run`), and every other member must come out
+   byte for byte as staged. It refuses an existing or listed file, a dirty repository, a
    build from a dirty work copy, a profile other than the target's in `release.json`, binaries
    that differ from the manifest and undefined symbols. The programs are stripped with
    `strip --strip-unneeded --remove-section .comment` only: a full strip removes relocations

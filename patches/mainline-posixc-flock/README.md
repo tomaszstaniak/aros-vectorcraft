@@ -5,6 +5,8 @@ Base: master `67f7b775421aca4ea8ee609c975ff459ebf69815` (2026-10-28).
 Branch: `posixc-flock-per-description`, commit `a265e734459ef4cf2762fd30e6467c5b967603d7`
 (fork tomaszstaniak/AROS).
 
+Test logs in `evidence/` show source paths relative to the AROS checkout.
+
 Status: submitted 2026-10-28 as https://github.com/aros-development-team/AROS/pull/1919 (head a265e73445, open).
 
 ## Problem

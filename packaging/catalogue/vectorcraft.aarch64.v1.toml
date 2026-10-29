@@ -16,7 +16,32 @@ post_install_notes = [
   "OpenGL is untested on Pi hardware: AUTO uses CPU. GPU stopped the system in QEMU; save your work first.",
   "Settings and VectorCraft.log are kept in VectorCraftData in the program drawer; keep it when upgrading.",
 ]
-@REQUIRES@
+
+# System libraries the programs open; gl.library only for GUI_RENDERER AUTO or GPU.
+[[requires_system]]
+type = "library"
+id   = "posixc.library"
+
+[[requires_system]]
+type = "library"
+id   = "stdc.library"
+
+[[requires_system]]
+type = "library"
+id   = "stdcio.library"
+
+[[requires_system]]
+type = "library"
+id   = "cybergraphics.library"
+
+[[requires_system]]
+type = "library"
+id   = "iffparse.library"
+
+[[requires_system]]
+type = "library"
+id   = "asl.library"
+
 [source]
 repository = "https://github.com/tomaszstaniak/aros-vectorcraft"
 revision   = "v0.17.0-510-g9997ff02-test1"
