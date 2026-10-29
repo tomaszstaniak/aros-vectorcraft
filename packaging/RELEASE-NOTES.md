@@ -11,7 +11,7 @@ First public test release of the AROS port of VectorCraft, a vector drawing prog
 | `VectorCraft-0.17.0-510-g9997ff02-test3-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22); not for hosted Macaros |
 | `VectorCraft-0.17.0-510-g9997ff02-test3-source.zip` | Port sources, patches, pinned inputs and build recipe |
 
-Each package runs only on the system it was built for. `SHA256SUMS` lists the checksums. The packages can also be installed with arospkg (`apkg install vectorcraft`) once the catalogue lists them.
+Each package runs only on the system it was built for. `SHA256SUMS` lists the checksums. The x86_64 packages can also be installed with arospkg 0.6 (`apkg install vectorcraft`) once the catalogue lists them. The Raspberry Pi package is not in the catalogue: its program is larger than apkg 0.5.0, the newest Pi client, accepts.
 
 ## Features
 
