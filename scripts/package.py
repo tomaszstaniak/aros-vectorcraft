@@ -520,6 +520,7 @@ def cmd_source(a, release):
                 git_tar(Path(cfg["rust_aros"]), commit, ["LICENSE", "std-groundwork/libc-aros", "std-groundwork/std-patch", "x86_64-aros.json.in", "profiles"]))
             origins[f"rust-aros-{commit[:12]}.tar.xz"] = {
                 "repository": ORIGINS["rust-aros"], "commit": commit, "license": "MIT",
+                "note": "the commit is on a rust-aros branch that is not published; this snapshot is the source of these files",
                 "content": "LICENSE, std-groundwork/libc-aros, std-groundwork/std-patch, x86_64-aros.json.in, profiles"}
             if manifest.get("pthread"):
                 pc = manifest["pthread"]["aros_src_commit"]
