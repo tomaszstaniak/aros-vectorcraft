@@ -1,7 +1,7 @@
 {
   "name": "VectorCraft",
   "version": "0.17.0",
-  "release": "0.17.0-510-g9997ff02-test2",
+  "release": "0.17.0-510-g9997ff02-test3",
   "upstream_version": "main at 9997ff02 (v0.17.0-510-g9997ff02: 510 commits after v0.17.0), 2026-10-27",
   "drawer": "VectorCraft",
   "stack": 16777216,
@@ -9,7 +9,7 @@
     "GUI_RENDERER=CPU"
   ],
   "icon_source": "work:assets/app-icon/hicolor/64x64/apps/ai.storyteller.vectorcraft.png",
-  "source_archive": "VectorCraft-0.17.0-510-g9997ff02-test2-source.zip",
+  "source_archive": "VectorCraft-0.17.0-510-g9997ff02-test3-source.zip",
   "source_archive_exclude": [],
   "notices": [
     "LICENSE-MIT",

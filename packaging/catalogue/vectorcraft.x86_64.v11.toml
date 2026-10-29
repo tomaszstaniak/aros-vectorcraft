@@ -1,5 +1,5 @@
 id              = "vectorcraft"
-version         = "0.17.0-510-g9997ff02-test2"
+version         = "0.17.0-510-g9997ff02-test3"
 summary         = "Vector drawing program with SVG, PDF and EPS import and export (test release)"
 category        = "graphics/edit"
 license         = "MIT OR Apache-2.0"
@@ -44,8 +44,8 @@ id   = "asl.library"
 
 [source]
 repository = "https://github.com/tomaszstaniak/aros-vectorcraft"
-revision   = "v0.17.0-510-g9997ff02-test2"
-archive    = "VectorCraft-0.17.0-510-g9997ff02-test2-source.zip"
+revision   = "v0.17.0-510-g9997ff02-test3"
+archive    = "VectorCraft-0.17.0-510-g9997ff02-test3-source.zip"
 built_with = "x86_64 ABIv11, GCC 10.5.0, Rust nightly 1.100 (rust-aros), egui 0.37 through egui-aros"
 
 [launch]

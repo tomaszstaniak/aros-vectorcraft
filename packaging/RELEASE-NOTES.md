@@ -1,4 +1,4 @@
-# VectorCraft 0.17.0-510-g9997ff02, test 2, for AROS
+# VectorCraft 0.17.0-510-g9997ff02, test 3, for AROS
 
 First public test release of the AROS port of VectorCraft, a vector drawing program. It is built from VectorCraft's main branch at commit 9997ff02 of 2026-10-27, 510 commits after the 0.17.0 release, so it contains changes that 0.17.0 itself does not have.
 
@@ -6,10 +6,10 @@ First public test release of the AROS port of VectorCraft, a vector drawing prog
 
 | File | System |
 |---|---|
-| `VectorCraft-0.17.0-510-g9997ff02-test2-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3 / ABIv11 2026.09) |
-| `VectorCraft-0.17.0-510-g9997ff02-test2-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (built against AROS 9802c8c0, 2026-10-28) |
-| `VectorCraft-0.17.0-510-g9997ff02-test2-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22); not for hosted Macaros |
-| `VectorCraft-0.17.0-510-g9997ff02-test2-source.zip` | Port sources, patches, pinned inputs and build recipe |
+| `VectorCraft-0.17.0-510-g9997ff02-test3-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3 / ABIv11 2026.09) |
+| `VectorCraft-0.17.0-510-g9997ff02-test3-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (built against AROS 9802c8c0, 2026-10-28) |
+| `VectorCraft-0.17.0-510-g9997ff02-test3-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22); not for hosted Macaros |
+| `VectorCraft-0.17.0-510-g9997ff02-test3-source.zip` | Port sources, patches, pinned inputs and build recipe |
 
 Each package runs only on the system it was built for. `SHA256SUMS` lists the checksums. The packages can also be installed with arospkg (`apkg install vectorcraft`) once the catalogue lists them.
 
@@ -28,7 +28,7 @@ Each package runs only on the system it was built for. `SHA256SUMS` lists the ch
 
 Unpack the archive for your system anywhere writable and double-click VectorCraft. From the Shell, run `Stack 16777216` first, then `VectorCraft [--gui-renderer CPU|AUTO|GPU] [file]`. Settings and `VectorCraft.log` are kept in `VectorCraftData` inside the program drawer; to upgrade, unpack the new version to a new place and move `VectorCraftData` into it. The archive also holds a `.arospkg` drawer with the arospkg description; after unpacking by hand it can be deleted.
 
-`VectorCraft --version` and the first line of `VectorCraft.log` name the exact build (`0.17.0-510-g9997ff02-test2`); please include it when you report a problem.
+`VectorCraft --version` and the first line of `VectorCraft.log` name the exact build (`0.17.0-510-g9997ff02-test3`); please include it when you report a problem.
 
 ## Known limitations
 

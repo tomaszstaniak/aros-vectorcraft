@@ -136,7 +136,7 @@ crates.io archives of the patched crates. `sources/INDEX.json` lists them with t
 under `origins`, the repository, commit and licence of each. The rust-aros snapshots carry its
 `LICENSE`; the Rust std snapshots carry Rust's `COPYRIGHT-library.html` and licence texts from
 the rustup toolchain whose `rustc -V` matches the build.
-The rust-aros commits named there (da569a68146b for x86_64, 79324c2dbfa0 for the Pi in test 2)
+The rust-aros commits named there (da569a68146b for x86_64, 79324c2dbfa0 for the Pi)
 are on a branch that is not published; the snapshots in `sources/` are the source of those files.
 The storytold egui and winit forks are public Git repositories pinned in `upstreams.json`.
 
