@@ -538,8 +538,8 @@ def cmd_source(a, release):
                 packed = io.BytesIO()
                 with tarfile.open(fileobj=packed, mode="w:xz") as tar:
                     tar.add(Path(manifest["toolchain"]["sysroot"]) / "lib/rustlib/src/rust", arcname="rust", recursive=True)
-                    for name, source in rust_licenses(manifest["toolchain"]["rustc"]).items():
-                        tar.add(source, arcname=f"rust/{name}")
+                    for licence, source in rust_licenses(manifest["toolchain"]["rustc"]).items():
+                        tar.add(source, arcname=f"rust/{licence}")
                 stds[key] = f"rust-std-{key[:12]}.tar.xz"
                 origins[stds[key]] = {
                     "repository": "https://github.com/rust-lang/rust", "toolchain": manifest["toolchain"]["rustc"],
