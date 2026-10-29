@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 09:18:46 +0100
+Subject: [PATCH] AROS host: release name in --version and the log; per-frame
+ log; panic test build
+
+The port's build passes the release name (packaging/release.json) as
+VECTORCRAFT_RELEASE, so the log banner and --version of both programs name
+the exact snapshot. VECTORCRAFT_FRAME_LOG=each logs every frame (events,
+waits, timings); the panic-test feature lets a test build panic inside the
+window loop to check the shutdown after it.
+---
+ apps/vectorcraft-aros/Cargo.toml    |  4 ++++
+ apps/vectorcraft-aros/src/native.rs | 19 ++++++++++++++++++-
+ apps/vectorcraft-cli/src/main.rs    |  2 +-
+ 3 files changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/apps/vectorcraft-aros/Cargo.toml b/apps/vectorcraft-aros/Cargo.toml
+index 78de598e632e46582da49f2ea99e34dac62212b4..8d54e214e7897f75068d1bb013d0f7596746a652 100644
+--- a/apps/vectorcraft-aros/Cargo.toml
++++ b/apps/vectorcraft-aros/Cargo.toml
+@@ -22,3 +22,7 @@ egui = { workspace = true }
+ egui-aros = { version = "0.1", features = ["asl", "glow"] }
+ log = { workspace = true }
+ serde_json = { workspace = true }
++
++[features]
++# Test builds: VECTORCRAFT_TEST_PANIC makes the window loop panic, to check the shutdown after it.
++panic-test = []
+diff --git a/apps/vectorcraft-aros/src/native.rs b/apps/vectorcraft-aros/src/native.rs
+index 5b94c95b1fbd11e0d526e20e9b3230aa614646b8..c1244c54878173808c40ac2b4512e5a098bc5553 100644
+--- a/apps/vectorcraft-aros/src/native.rs
++++ b/apps/vectorcraft-aros/src/native.rs
+@@ -19,7 +19,12 @@ mod prefs_dir;
+ #[path = "../../vectorcraft/src/prefs.rs"]
+ mod prefs;
+ 
+-const VERSION: &str = env!("CARGO_PKG_VERSION");
++/// The release name the port's build passes in (packaging/release.json), so the log and --version
++/// name the exact snapshot; plain cargo builds print the crate version.
++const VERSION: &str = match option_env!("VECTORCRAFT_RELEASE") {
++    Some(v) => v,
++    None => env!("CARGO_PKG_VERSION"),
++};
+ const TARGET: &str = match option_env!("VECTORCRAFT_BUILD_TARGET") {
+     Some(t) => t,
+     None => "aros",
+@@ -308,8 +313,20 @@ impl egui_aros::App for Host {
+     }
+ 
+     fn frame_done(&mut self, report: &egui_aros::FrameReport, _renderer: &egui_aros::raster::Renderer) {
++        // Test builds only: a panic inside the window loop, to check the shutdown after it.
++        #[cfg(feature = "panic-test")]
++        if report.frame == 3 && std::env::var_os("VECTORCRAFT_TEST_PANIC").is_some() {
++            panic!("test panic requested by VECTORCRAFT_TEST_PANIC");
++        }
+         if let Some(stats) = &mut self.frames {
+             stats.add(report);
++            if std::env::var("VECTORCRAFT_FRAME_LOG").as_deref() == Ok("each") {
++                line(&format!(
++                    "frame {} ev {} mv {} key {} btn {} waited {:?} timeout {:?} bytimeout {} late {:?} ui {:?} raster {:?} present {:?} next {:?}",
++                    report.frame, report.events, report.moves, report.keys, report.buttons, report.waited, report.wait_timeout,
++                    report.woke_by_timeout, report.repaint_late, report.ui, report.raster, report.present, report.next_repaint
++                ));
++            }
+         }
+     }
+ }
+diff --git a/apps/vectorcraft-cli/src/main.rs b/apps/vectorcraft-cli/src/main.rs
+index f2af90a688a0981116ee4caca832c2937aa71523..729de3d1807869e434d5ab72f21ca5fff8e8c2e0 100644
+--- a/apps/vectorcraft-cli/src/main.rs
++++ b/apps/vectorcraft-cli/src/main.rs
+@@ -184,7 +184,7 @@ fn main() -> ExitCode {
+         Some("perf") => perf::run(&args[1..]),
+         Some("-h" | "--help" | "help") | None => help(),
+         Some("-V" | "--version") => {
+-            outln!("vectorcraft-cli {}", env!("CARGO_PKG_VERSION"));
++            outln!("vectorcraft-cli {}", option_env!("VECTORCRAFT_RELEASE").unwrap_or(env!("CARGO_PKG_VERSION")));
+             Ok(())
+         }
+         Some(other) => Err(format!("unknown subcommand `{other}`\n\n{}", usage())),

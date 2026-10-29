@@ -91,6 +91,12 @@ checkout. The mainline x86_64 target needs no `aros_src`.
    hashes, and checks that no symbol is left undefined. `--worktree` builds uncommitted files
    too and is recorded as such; such builds cannot be packaged. A build is not a runtime test.
 
+   The build passes `release` from `release.json` to the programs as `VECTORCRAFT_RELEASE`;
+   `--version` and the log banner print it, and packaging refuses a build made under another
+   release name. Test builds only: `--features panic-test` makes the editor panic in its third
+   frame when `VECTORCRAFT_TEST_PANIC` is set, and `VECTORCRAFT_FRAME_LOG=each` at run time logs
+   every frame (events, waits, timings; any other value logs averages per 20 frames).
+
 4. Commit this repository, then package each build and the sources. `APKG_PACK` names
    arospkg's `tools/apkg-pack` (or `apkg-pack.pyz`), which writes each binary archive:
 
@@ -126,7 +132,10 @@ checkout. The mainline x86_64 target needs no `aros_src`.
 `sources/`, the pinned inputs every packaged build used: VectorCraft's upstream source,
 egui-aros, the rust-aros files used (target templates, `libc-aros`), the AROS
 `compiler/pthread` sources, the pomaros-hosted bridge, the Rust standard library source and the
-crates.io archives of the patched crates. `sources/INDEX.json` lists them with their hashes.
+crates.io archives of the patched crates. `sources/INDEX.json` lists them with their hashes and,
+under `origins`, the repository, commit and licence of each. The rust-aros snapshots carry its
+`LICENSE`; the Rust std snapshots carry Rust's `COPYRIGHT-library.html` and licence texts from
+the rustup toolchain whose `rustc -V` matches the build.
 The storytold egui and winit forks are public Git repositories pinned in `upstreams.json`.
 
 ## Host checks

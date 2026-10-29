@@ -1,15 +1,15 @@
-# VectorCraft 0.17.0-510-g9997ff02, test 1, for AROS
+# VectorCraft 0.17.0-510-g9997ff02, test 2, for AROS
 
-First test release of the AROS port of VectorCraft, a vector drawing program. It is built from VectorCraft's main branch at commit 9997ff02 of 2026-10-27, 510 commits after the 0.17.0 release, so it contains changes that 0.17.0 itself does not have.
+First public test release of the AROS port of VectorCraft, a vector drawing program. It is built from VectorCraft's main branch at commit 9997ff02 of 2026-10-27, 510 commits after the 0.17.0 release, so it contains changes that 0.17.0 itself does not have.
 
 ## Downloads
 
 | File | System |
 |---|---|
-| `VectorCraft-0.17.0-510-g9997ff02-test1-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3 / ABIv11 2026.09) |
-| `VectorCraft-0.17.0-510-g9997ff02-test1-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (built against AROS 9802c8c0, 2026-10-28) |
-| `VectorCraft-0.17.0-510-g9997ff02-test1-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22); not for hosted Macaros |
-| `VectorCraft-0.17.0-510-g9997ff02-test1-source.zip` | Port sources, patches, pinned inputs and build recipe |
+| `VectorCraft-0.17.0-510-g9997ff02-test2-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3 / ABIv11 2026.09) |
+| `VectorCraft-0.17.0-510-g9997ff02-test2-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (built against AROS 9802c8c0, 2026-10-28) |
+| `VectorCraft-0.17.0-510-g9997ff02-test2-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22); not for hosted Macaros |
+| `VectorCraft-0.17.0-510-g9997ff02-test2-source.zip` | Port sources, patches, pinned inputs and build recipe |
 
 Each package runs only on the system it was built for. `SHA256SUMS` lists the checksums. The packages can also be installed with arospkg (`apkg install vectorcraft`) once the catalogue lists them.
 
@@ -28,16 +28,19 @@ Each package runs only on the system it was built for. `SHA256SUMS` lists the ch
 
 Unpack the archive for your system anywhere writable and double-click VectorCraft. From the Shell, run `Stack 16777216` first, then `VectorCraft [--gui-renderer CPU|AUTO|GPU] [file]`. Settings and `VectorCraft.log` are kept in `VectorCraftData` inside the program drawer; to upgrade, unpack the new version to a new place and move `VectorCraftData` into it. The archive also holds a `.arospkg` drawer with the arospkg description; after unpacking by hand it can be deleted.
 
+`VectorCraft --version` and the first line of `VectorCraft.log` name the exact build (`0.17.0-510-g9997ff02-test2`); please include it when you report a problem.
+
 ## Known limitations
 
 - Test release: every change redraws the whole window, so on slow machines and in emulators the interface follows with a delay.
 - One window: floating panels open inside the main window.
-- OpenGL: AROS One 1.3, ABIv11 2026.09 and mainline have only Mesa's software renderer, so `AUTO` uses CPU there; `GPU` works but is several times slower than CPU, and the window can show the frame from before your last key or click until the pointer moves. Hardware OpenGL drivers have not been tested.
+- OpenGL: AROS One 1.3, ABIv11 2026.09 and mainline have only Mesa's software renderer, so `AUTO` uses CPU there. `GPU` works but draws about ten times slower than CPU: in an emulator one redraw took 15 to 30 seconds, so a click or key can take up to a minute to show. Hardware OpenGL drivers have not been tested.
 - Raspberry Pi: tested in an emulator only, not on a physical Pi. OpenGL has not been tested on Pi hardware, so `AUTO` uses CPU. `GPU` opens OpenGL; in the emulator (Mesa's software renderer) that stopped the whole system. Save your work before you try it.
 - On mainline AROS, the first use of OpenGL (`AUTO` or `GPU`) since the system started leaves the VectorCraft drawer in use until a reboot when the program was started from Workbench or from a Shell inside its drawer. Starts with `CPU` are not affected.
 - Letters typed with a keymap other than ISO 8859-1 can arrive wrong; file and drawer names must be plain ASCII or UTF-8.
 - Clipboard text only. File > Print saves a PDF. No automatic updates. The automation server and plug-ins have not been tested on AROS.
 - `vectorcraft-cli` cannot write a file at the top of a volume named the AROS way (`RAM:x.png`); use `/RAM/x.png` or a drawer.
 - Shell starts need a 16 MiB stack; the Workbench icon sets it.
+- If VectorCraft stops on an internal error, on ABIv11 it closes its window and keeps your settings; on mainline and the Raspberry Pi it ends at once. Save your work often.
 
 Licences and notices for VectorCraft and everything built into it are in the `Licenses` drawer of each package.

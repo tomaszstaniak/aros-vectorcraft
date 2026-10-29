@@ -1,0 +1,81 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 09:18:46 +0100
+Subject: [PATCH] Shortcuts: every arrow press in a frame nudges, in order
+
+egui's consume_key removes every press of the key, so several presses that
+reach one frame nudged once. A host that draws slowly (a software renderer,
+an emulator) delivers them that way, and the selection then moves less than
+the keys pressed. Count the presses and nudge once per press, in the order
+they were pressed.
+---
+ crates/ui-egui/src/shortcuts.rs       | 24 ++++++++++++++++++++----
+ crates/ui-egui/src/shortcuts/tests.rs | 22 ++++++++++++++++++++++
+ 2 files changed, 42 insertions(+), 4 deletions(-)
+
+diff --git a/crates/ui-egui/src/shortcuts.rs b/crates/ui-egui/src/shortcuts.rs
+index 251617931106e28f33b87a339285d1066a2d7041..83d43f08333255d677d70f657b3e05a84b1d7fb4 100644
+--- a/crates/ui-egui/src/shortcuts.rs
++++ b/crates/ui-egui/src/shortcuts.rs
+@@ -544,11 +544,27 @@ pub fn handle(app: &mut VectorcraftApp, ctx: &egui::Context) {
+             }
+         }
+     }
+-    // Arrow nudges (Shift = ×10, Alt = copy).
++    // Arrow nudges (Shift = ×10, Alt = copy), one per press and in the order pressed: a host that
++    // draws slowly delivers several presses to one frame, and `consume_key` takes them all.
+     let arrows = [(Key::ArrowLeft, -1.0, 0.0), (Key::ArrowRight, 1.0, 0.0), (Key::ArrowUp, 0.0, -1.0), (Key::ArrowDown, 0.0, 1.0)];
+-    for (k, dx, dy) in arrows {
+-        let m = ctx.input(|i| i.modifiers);
+-        if ctx.input_mut(|i| i.consume_key(m, k)) && app.session.active().is_some_and(|d| d.selection.has_objects_or_guides()) {
++    let m = ctx.input(|i| i.modifiers);
++    let order: Vec<usize> = ctx.input(|i| {
++        i.events
++            .iter()
++            .filter_map(|e| match e {
++                egui::Event::Key { key, pressed: true, .. } => arrows.iter().position(|(a, ..)| a == key),
++                _ => None,
++            })
++            .collect()
++    });
++    let mut counts = arrows.map(|(k, ..)| ctx.input_mut(|i| i.count_and_consume_key(m, k)));
++    for n in order {
++        if counts[n] == 0 {
++            continue;
++        }
++        counts[n] -= 1;
++        let (_, dx, dy) = arrows[n];
++        if app.session.active().is_some_and(|d| d.selection.has_objects_or_guides()) {
+             let _ = app.run("object.nudge", json!({"dx": dx, "dy": dy, "big": m.shift, "copy": m.alt}));
+         }
+     }
+diff --git a/crates/ui-egui/src/shortcuts/tests.rs b/crates/ui-egui/src/shortcuts/tests.rs
+index f679b16382be9b84c10f8427653aaaa269d16c9a..5cb10f259acddab56104e5bb0cd9e607ac267355 100644
+--- a/crates/ui-egui/src/shortcuts/tests.rs
++++ b/crates/ui-egui/src/shortcuts/tests.rs
+@@ -1222,3 +1222,25 @@ fn all_registered_shortcuts_parse() {
+         }
+     }
+ }
++
++/// Every arrow press in one frame nudges: a host that draws slowly (a software renderer, an
++/// emulator) delivers several presses to one frame, and only the first used to move the object.
++#[test]
++fn every_arrow_press_in_one_frame_nudges() {
++    let mut app = VectorcraftApp::new(vectorcraft_engine::Session::new(), Default::default());
++    app.session.execute("file.new", &json!({"width": 200, "height": 200})).unwrap();
++    let rect = app.session.execute("shape.rectangle", &json!({"x": 0, "y": 0, "width": 10, "height": 10})).unwrap()["id"].as_u64().unwrap();
++    app.select_tool("selection");
++    app.session.execute("select.set", &json!({"ids": [rect]})).unwrap();
++    let nudges = |app: &VectorcraftApp| app.session.journal.iter().filter(|(id, _)| id == "object.nudge").count();
++
++    let before = nudges(&app);
++    let mut events = press(Key::ArrowRight, Modifiers::NONE);
++    events.extend(press(Key::ArrowRight, Modifiers::NONE));
++    events.extend(press(Key::ArrowDown, Modifiers::NONE));
++    events.extend(press(Key::ArrowRight, Modifiers::NONE));
++    frame(&mut app, events);
++    let steps: Vec<_> = app.session.journal.iter().filter(|(id, _)| id == "object.nudge").skip(before).map(|(_, p)| (p["dx"].clone(), p["dy"].clone())).collect();
++    assert_eq!(steps, [(json!(1.0), json!(0.0)), (json!(1.0), json!(0.0)), (json!(0.0), json!(1.0)), (json!(1.0), json!(0.0))]);
++    assert_eq!(nudges(&app) - before, 4);
++}

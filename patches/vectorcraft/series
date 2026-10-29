@@ -8,3 +8,5 @@
 0008-AROS-host-Workbench-exit-closed-log-quiet-Workbench-.patch
 0009-AROS-host-OpenGL-on-the-Raspberry-Pi-only-on-explici.patch
 0010-AROS-host-GPU-opens-OpenGL-on-the-Raspberry-Pi-too-A.patch
+0011-Shortcuts-every-arrow-press-in-a-frame-nudges-in-ord.patch
+0012-AROS-host-release-name-in-version-and-the-log-per-fr.patch

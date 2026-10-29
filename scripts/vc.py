@@ -709,7 +709,11 @@ def cmd_build(args):
         command.append("--no-default-features")
     if args.features:
         command += ["--features", args.features]
-    env = dict(os.environ, VECTORCRAFT_BUILD_TARGET=cfg["target"], CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(root / "target"),
+    # The release name (packaging/release.json) is what the programs print for --version and in
+    # their log, so a tester's report names the exact snapshot.
+    release_name = json.loads((REPO / "packaging" / "release.json").read_text())["release"]
+    env = dict(os.environ, VECTORCRAFT_BUILD_TARGET=cfg["target"], VECTORCRAFT_RELEASE=release_name,
+               CARGO_HOME=cfg["cargo_home"], CARGO_TARGET_DIR=str(root / "target"),
                AROS_CC=cfg["aros_gcc"], AROS_GCC=cfg["aros_gcc"], AROS_AR=cfg["aros_ar"], AROS_SDK=cfg["aros_sdk"])
     build_id = str(uuid.uuid4())
     out = root / "out" / f"{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}-{build_id[:8]}"
@@ -719,6 +723,7 @@ def cmd_build(args):
         "status": "building",
         "date": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "target": cfg["target"],
+        "release": release_name,
         "path_mode": "-nix (DOS paths resolved at frontend boundaries)",
         "stack_bytes": 16777216,
         "renderers": {"gui": "CPU", "image": "CPU", "gpu_backends_compiled": False},

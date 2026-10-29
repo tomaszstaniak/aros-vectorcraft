@@ -140,6 +140,8 @@ def check_build(build, release):
         raise Failure(f"{build}: target {target!r} has no section in release.json")
     if manifest.get("status") not in ("built-not-run", "accepted"):
         raise Failure(f"{build}: build status is {manifest.get('status')!r}, not a finished build")
+    if manifest.get("release") != release["release"]:
+        raise Failure(f"{build}: built as release {manifest.get('release')!r}, release.json is {release['release']!r}")
     if manifest["work_dirty"] or manifest["source"] != "committed HEAD":
         raise Failure(f"{build}: built from a dirty or uncommitted work copy")
     command = manifest["command"]
@@ -446,6 +448,33 @@ def git_tar(checkout, commit, paths=()):
     return lzma.compress(git("archive", "--format=tar", commit, *paths, cwd=checkout))
 
 
+# Where each bundled input comes from, for INDEX.json. Commits are the ones the builds used.
+ORIGINS = {
+    "vectorcraft": "https://github.com/storytold/vectorcraft",
+    "egui-aros": "https://github.com/tomaszstaniak/egui-aros",
+    "rust-aros": "https://github.com/tomaszstaniak/rust-aros",
+    "aros-v11": "https://github.com/deadwood2/AROS",
+    "aros-mainline": "https://github.com/aros-development-team/AROS",
+    "pomaros-hosted": "https://github.com/pomaros/pomaros-hosted",
+}
+
+
+def rust_licenses(rustc):
+    """Rust's copyright notice and licence texts for the std source, from the rustup toolchain
+    whose rustc reports exactly `rustc` (the std source itself carries none at its top)."""
+    home = Path(os.environ.get("RUSTUP_HOME", Path.home() / ".rustup"))
+    for toolchain in sorted((home / "toolchains").glob("*")):
+        binary = toolchain / "bin" / "rustc"
+        doc = toolchain / "share" / "doc" / "rust"
+        if binary.exists() and (doc / "licenses").is_dir():
+            version = subprocess.run([binary, "-V"], capture_output=True, text=True).stdout.strip()
+            if version == rustc:
+                files = {"COPYRIGHT-library.html": doc / "COPYRIGHT-library.html"}
+                files.update({f"licenses/{f.name}": f for f in sorted((doc / "licenses").iterdir())})
+                return files
+    raise Failure(f"no rustup toolchain with licence texts reports {rustc!r}")
+
+
 def cmd_source(a, release):
     builds = [b.resolve() for b in a.build]
     manifests = [check_build(b, release)[0] for b in builds]
@@ -475,27 +504,47 @@ def cmd_source(a, release):
             zip_entry(bundle, prefix + "sources/" + label, data, 0o100644, date)
 
         m0 = manifests[0]
+        origins = {}
         add("vectorcraft-upstream.tar.xz", git_tar(REPO / "upstream/vectorcraft", m0["upstreams"]["vectorcraft"]["commit"]))
+        origins["vectorcraft-upstream.tar.xz"] = {"repository": ORIGINS["vectorcraft"], "commit": m0["upstreams"]["vectorcraft"]["commit"],
+                                                  "license": "MIT OR Apache-2.0", "content": "the whole tree; the port's changes are patches/vectorcraft"}
         stds = {}
         for manifest in manifests:
             cfg = config_for(manifest["target"])
             add("egui-aros.tar.xz", git_tar(Path(cfg["egui_aros"]), manifest["upstreams"]["egui-aros"]["commit"]))
+            origins["egui-aros.tar.xz"] = {"repository": ORIGINS["egui-aros"], "commit": manifest["upstreams"]["egui-aros"]["commit"],
+                                           "license": "MIT OR Apache-2.0", "content": "the whole tree"}
             libc = manifest["libc_aros"]
             commit = libc.get("rust_aros_commit", cfg["rust_aros_commit"])
             add(f"rust-aros-{commit[:12]}.tar.xz",
-                git_tar(Path(cfg["rust_aros"]), commit, ["std-groundwork/libc-aros", "std-groundwork/std-patch", "x86_64-aros.json.in", "profiles"]))
+                git_tar(Path(cfg["rust_aros"]), commit, ["LICENSE", "std-groundwork/libc-aros", "std-groundwork/std-patch", "x86_64-aros.json.in", "profiles"]))
+            origins[f"rust-aros-{commit[:12]}.tar.xz"] = {
+                "repository": ORIGINS["rust-aros"], "commit": commit, "license": "MIT",
+                "content": "LICENSE, std-groundwork/libc-aros, std-groundwork/std-patch, x86_64-aros.json.in, profiles"}
             if manifest.get("pthread"):
                 pc = manifest["pthread"]["aros_src_commit"]
                 add(f"aros-pthread-{pc[:12]}.tar.xz", git_tar(Path(cfg["aros_src"]), pc, ["compiler/pthread", "LICENSE"]))
+                origins[f"aros-pthread-{pc[:12]}.tar.xz"] = {
+                    "repository": ORIGINS["aros-v11" if manifest["target"].endswith("abiv11-pc") else "aros-mainline"],
+                    "commit": pc, "license": "AROS Public License (LICENSE)", "content": "compiler/pthread, LICENSE",
+                    "patches": sorted(manifest["pthread"].get("patches", {}))}
             if manifest.get("glue"):
                 gc = manifest["glue"]["pomaros_hosted_commit"]
                 add(f"pomaros-hosted-{gc[:12]}.tar.xz", git_tar(Path(cfg["pomaros_hosted"]), gc, ["hosted/rust", "LICENSE"]))
+                origins[f"pomaros-hosted-{gc[:12]}.tar.xz"] = {
+                    "repository": ORIGINS["pomaros-hosted"], "commit": gc, "license": "see LICENSE", "content": "hosted/rust, LICENSE"}
             key = manifest["toolchain"]["std_source_sha256"]
             if key not in stds:
                 packed = io.BytesIO()
                 with tarfile.open(fileobj=packed, mode="w:xz") as tar:
                     tar.add(Path(manifest["toolchain"]["sysroot"]) / "lib/rustlib/src/rust", arcname="rust", recursive=True)
+                    for name, source in rust_licenses(manifest["toolchain"]["rustc"]).items():
+                        tar.add(source, arcname=f"rust/{name}")
                 stds[key] = f"rust-std-{key[:12]}.tar.xz"
+                origins[stds[key]] = {
+                    "repository": "https://github.com/rust-lang/rust", "toolchain": manifest["toolchain"]["rustc"],
+                    "license": "MIT OR Apache-2.0 (rust/COPYRIGHT-library.html, rust/licenses)",
+                    "content": "the std source of the build sysroot: rust-src of that toolchain with rust-aros std-groundwork/std-patch applied"}
                 add(stds[key], packed.getvalue())
             for info in manifest["crates"].values():
                 crate = f"{info['package']}-{info['version']}.crate"
@@ -503,9 +552,10 @@ def cmd_source(a, release):
                 if len(found) != 1:
                     raise Failure(f"{crate} is not in {cfg['cargo_home']}")
                 add("crates/" + crate, found[0].read_bytes())
+                origins["crates/" + crate] = {"repository": "https://crates.io", "content": "the registry archive; patched at build time"}
         index = {"repository_head": repo_head, "work_head": m0["work_head"],
                  "builds": {m["target"]: m["build_id"] for m in manifests},
-                 "rust_std": stds, "files": dict(sorted(added.items()))}
+                 "rust_std": stds, "files": dict(sorted(added.items())), "origins": dict(sorted(origins.items()))}
         zip_entry(bundle, prefix + "sources/INDEX.json", (json.dumps(index, indent=2) + "\n").encode(), 0o100644, date)
     partial.rename(path)
     digest = dist.record(name)

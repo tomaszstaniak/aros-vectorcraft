@@ -2,7 +2,7 @@
 
 Port of [VectorCraft](https://github.com/storytold/vectorcraft) (main of 2026-10-27, after 0.17.0), a vector drawing program written in Rust, to AROS.
 
-Status: test release 0.17.0-510-g9997ff02-test1 (VectorCraft main at 9997ff02, 510 commits after 0.17.0) for the three targets below. Packages are on the [releases page](https://github.com/tomaszstaniak/aros-vectorcraft/releases).
+Status: test release 0.17.0-510-g9997ff02-test2 (VectorCraft main at 9997ff02, 510 commits after 0.17.0) for the three targets below. Packages are on the [releases page](https://github.com/tomaszstaniak/aros-vectorcraft/releases).
 
 Targets:
 
