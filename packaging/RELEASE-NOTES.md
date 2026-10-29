@@ -42,6 +42,6 @@ Unpack the archive for your system anywhere writable and double-click VectorCraf
 - Clipboard text only. File > Print saves a PDF. No automatic updates. The automation server and plug-ins have not been tested on AROS.
 - `vectorcraft-cli` cannot write a file at the top of a volume named the AROS way (`RAM:x.png`); use `/RAM/x.png` or a drawer.
 - Shell starts need a 16 MiB stack; the Workbench icon sets it.
-- If VectorCraft stops on an internal error, on ABIv11 it closes its window and keeps your settings. On mainline and the Raspberry Pi it shows a "Caught Signal" requester and ends without saving settings; its window stays on screen until you restart the system. Save your work often.
+- If VectorCraft stops on an internal error, on ABIv11 it closes its window and keeps your settings. On mainline it shows a "Caught Signal" requester and ends without saving settings; its window stays on screen until you restart the system. The Raspberry Pi build is made the same way and is expected to behave like mainline (not tested there). Save your work often.
 
 Licences and notices for VectorCraft and everything built into it are in the `Licenses` drawer of each package.
