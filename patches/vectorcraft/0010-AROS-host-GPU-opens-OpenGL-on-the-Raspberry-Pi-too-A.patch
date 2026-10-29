@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 00:51:56 +0100
+Subject: [PATCH] AROS host: GPU opens OpenGL on the Raspberry Pi too; AUTO
+ stays on the CPU there; shutdown after a panic in the window loop
+
+---
+ apps/vectorcraft-aros/src/native.rs | 35 +++++++++++++++--------------
+ 1 file changed, 18 insertions(+), 17 deletions(-)
+
+diff --git a/apps/vectorcraft-aros/src/native.rs b/apps/vectorcraft-aros/src/native.rs
+index 3c4d27f3c21d7e58f0045dd498b8a51c18e903f3..5b94c95b1fbd11e0d526e20e9b3230aa614646b8 100644
+--- a/apps/vectorcraft-aros/src/native.rs
++++ b/apps/vectorcraft-aros/src/native.rs
+@@ -79,14 +79,13 @@ fn fail(message: &str, workbench: bool) -> std::process::ExitCode {
+ }
+ 
+ /// OpenGL on the Raspberry Pi has not been run on Pi hardware, and under emulation (Mesa's
+-/// software renderer, no VideoCore) it stopped the whole system. It is only opened when the user
+-/// asks for it knowingly.
+-const GL_UNTESTED: &str = "OpenGL on the Raspberry Pi is untested on Pi hardware and stopped the system under emulation; \
+-set VECTORCRAFT_EXPERIMENTAL_GL=1 to try it anyway";
+-
+-fn opengl_allowed() -> bool {
+-    !cfg!(target_arch = "aarch64") || std::env::var_os("VECTORCRAFT_EXPERIMENTAL_GL").is_some()
+-}
++/// software renderer, no VideoCore) it stopped the whole system. AUTO therefore does not try it
++/// there; GPU, asked for by name, does.
++const AUTO_SKIPS_GL: Option<&str> = if cfg!(target_arch = "aarch64") {
++    Some("OpenGL on the Raspberry Pi is not verified on Pi hardware; choose GPU to try it")
++} else {
++    None
++};
+ 
+ // ---------------------------------------------------------------------------------------------
+ 
+@@ -176,21 +175,23 @@ pub fn main() -> std::process::ExitCode {
+         min_inner_size: Some((640, 400)),
+         renderer: match launch.gui {
+             Mode::Cpu => egui_aros::RendererRequest::Cpu,
+-            Mode::Auto if !opengl_allowed() => {
+-                line(&format!("GUI_RENDERER AUTO uses the CPU: {GL_UNTESTED}"));
+-                egui_aros::RendererRequest::Cpu
+-            }
+-            Mode::Gpu if !opengl_allowed() => {
+-                return fail(&format!("GUI_RENDERER=GPU: {GL_UNTESTED}. Choose CPU."), wb);
+-            }
+-            Mode::Auto => egui_aros::RendererRequest::Auto,
++            Mode::Auto => match AUTO_SKIPS_GL {
++                Some(reason) => {
++                    line(&format!("GUI_RENDERER AUTO uses the CPU: {reason}"));
++                    egui_aros::RendererRequest::Cpu
++                }
++                None => egui_aros::RendererRequest::Auto,
++            },
+             Mode::Gpu => egui_aros::RendererRequest::Gpu,
+         },
+         ..Default::default()
+     };
+     let frames = std::env::var_os("VECTORCRAFT_FRAME_LOG").map(|_| FrameStats::default());
+     let mut host = Host { app, ctx: ctx.clone(), window, renderer_logged: false, frames };
+-    let result = egui_aros::run(options, ctx, &mut host);
++    // A panic below the app (renderer, window) unwinds to here on ABIv11, so the shutdown below
++    // still waits for the workers and releases the caches.
++    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| egui_aros::run(options, ctx, &mut host)))
++        .unwrap_or_else(|_| Err(egui_aros::Error::Window("the window loop stopped after a panic (see PANIC above)".into())));
+     line(&format!("GUI_RENDERER {}", describe()));
+ 
+     // The window is closed. Save the settings, wait for background saves and exports, then let

@@ -48,9 +48,10 @@ priority; the icon is not read when the program is started from the Shell.
 Values ignore letter case.
 
   CPU   the processor draws the interface; OpenGL is not opened (default)
-  AUTO  OpenGL if it opens, otherwise CPU; the reason is written to
-        VectorCraft.log
-  GPU   OpenGL, or the program stops with an error
+  AUTO  OpenGL if it opens and is not Mesa's software renderer, otherwise
+        CPU; the reason is written to VectorCraft.log
+  GPU   OpenGL (the software renderer too), or the program stops with an
+        error
 
 OpenGL draws the interface and shows the drawing. Documents are always
 rendered by the processor. On systems where OpenGL is Mesa's software

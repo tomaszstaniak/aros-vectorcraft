@@ -1,0 +1,28 @@
+id              = "vectorcraft"
+version         = "0.17.0-510-g9997ff02-test1"
+summary         = "Vector drawing program with SVG, PDF and EPS import and export (test release)"
+category        = "graphics/edit"
+license         = "MIT OR Apache-2.0"
+kind            = "app"
+arch            = "aarch64"
+abi             = "v1"
+subdir          = "VectorCraft"
+icon            = "VectorCraft.info"
+depends         = []
+depends_checked = true
+post_install_notes = [
+  "Native Raspberry Pi build (system image 2026-08-22); not for hosted Macaros. Tested in QEMU only.",
+  "Test release: the CPU draws the whole window on every change, so the interface reacts slowly.",
+  "OpenGL is untested on Pi hardware: AUTO uses CPU. GPU stopped the system in QEMU; save your work first.",
+  "Settings and VectorCraft.log are kept in VectorCraftData in the program drawer; keep it when upgrading.",
+]
+@REQUIRES@
+[source]
+repository = "https://github.com/tomaszstaniak/aros-vectorcraft"
+revision   = "v0.17.0-510-g9997ff02-test1"
+archive    = "VectorCraft-0.17.0-510-g9997ff02-test1-source.zip"
+built_with = "AArch64 ABIv1 Raspberry Pi SDK 20260822, Clang 20.1, Rust nightly 1.100 (rust-aros), egui 0.37 through egui-aros"
+
+[launch]
+executable = "VectorCraft"
+mode       = "workbench"

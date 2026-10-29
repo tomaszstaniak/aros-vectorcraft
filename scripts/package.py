@@ -35,6 +35,7 @@ the programs), so the same inputs give the same bytes. The unstripped binaries s
 build put them (build/<target>/out/<id>/); BUILD.txt records the hashes of both forms.
 """
 import argparse
+import calendar
 import contextlib
 import hashlib
 import io
@@ -256,7 +257,7 @@ def rust_docs(cfg, manifest):
 def build_txt(release, spec, manifest, repo_head, packaged):
     up = manifest["upstreams"]
     tc = manifest["toolchain"]
-    lines = [f"VectorCraft {release['version']} for AROS", "",
+    lines = [f"VectorCraft {release['release']} for AROS", "",
              f"Target:        {manifest['target']}",
              f"System:        {spec['system']}",
              f"Version:       {release['upstream_version']}",
@@ -306,7 +307,7 @@ def build_txt(release, spec, manifest, repo_head, packaged):
 
 def readme(release, spec):
     text = (PACKAGING / "ReadMe.txt").read_text()
-    for key, value in (("@VERSION@", release["version"]), ("@UPSTREAM_VERSION@", release["upstream_version"]),
+    for key, value in (("@VERSION@", release["release"]), ("@UPSTREAM_VERSION@", release["upstream_version"]),
                        ("@SYSTEM@", spec["system"]),
                        ("@LIMITATIONS@", "\n".join(release["limitations"] + spec["limitations"]))):
         text = text.replace(key, value)
@@ -324,15 +325,54 @@ def zip_entry(z, name, data, mode, date):
     z.writestr(info, data, compresslevel=9)
 
 
-def write_zip(path, files, date):
+# arospkg's catalogue key for each target. The catalogue has no platform field: the Pi entry's
+# notes say that it is the native Raspberry Pi build, not hosted Macaros.
+CATALOGUE = {"aros-x86_64-abiv11-pc": ("x86_64", "v11"), "aros-x86_64-abiv1-pc": ("x86_64", "v1"),
+             "aros-aarch64-abiv1-raspi": ("aarch64", "v1")}
+# Written by apkg-pack: the description embedded for `apkg-pack submit`, and the launch record
+# for `apkg run` in an unpacked drawer.
+PACK_ADDED = {".arospkg/manifest.toml", "VectorCraft/application.json"}
+
+
+def apkg_pack_zip(path, files, date, target, release):
+    """Write the archive through arospkg's apkg-pack: it checks the catalogue description against
+    the drawer, adds the description and the launch record, and checks the archive it wrote.
+    Every other member must come out byte for byte as staged."""
+    tool = os.environ.get("APKG_PACK")
+    if not tool:
+        raise Failure("set APKG_PACK to arospkg's tools/apkg-pack (or apkg-pack.pyz)")
+    arch, abi = CATALOGUE[target]
+    desc_path = PACKAGING / "catalogue" / f"vectorcraft.{arch}.{abi}.toml"
+    desc = desc_path.read_bytes()
+    meta = tomllib.loads(desc.decode())
+    if (meta["version"], meta["arch"], meta["abi"]) != (release["release"], arch, abi):
+        raise Failure(f"{desc_path.name}: version/arch/abi {meta['version']}/{meta['arch']}/{meta['abi']} "
+                      f"is not {release['release']}/{arch}/{abi}")
+    drawer = release["drawer"]
+    epoch = str(calendar.timegm((*date, 0, 0, 0)))
     partial = path.with_name(path.name + ".partial")
-    with zipfile.ZipFile(partial, "x") as z:
-        dirs = sorted({"/".join(n.split("/")[:i]) for n in files for i in range(1, n.count("/") + 1)})
-        for d in dirs:
-            zip_entry(z, d + "/", b"", 0o40755, date)
-        for n in sorted(files):
-            zip_entry(z, n, files[n][0], files[n][1], date)
+    with tempfile.TemporaryDirectory(prefix="vc-pack-") as tmp:
+        stage = Path(tmp)
+        for name, (data, mode) in files.items():
+            (stage / name).parent.mkdir(parents=True, exist_ok=True)
+            (stage / name).write_bytes(data)
+            (stage / name).chmod(mode & 0o777)
+        (stage / f"{drawer}.arospkg.toml").write_bytes(desc)
+        for cmd in (["check", stage / drawer], ["build", stage / drawer, "--output", partial, "--epoch", epoch],
+                    ["check", partial]):
+            done = subprocess.run([tool, *map(str, cmd)], capture_output=True, text=True)
+            if done.returncode:
+                raise Failure(f"apkg-pack {cmd[0]} failed:\n{done.stdout}{done.stderr}")
+    with zipfile.ZipFile(partial) as z:
+        members = {n for n in z.namelist() if not n.endswith("/")}
+        if members != set(files) | PACK_ADDED:
+            raise Failure(f"apkg-pack archive members differ: {sorted(members ^ (set(files) | PACK_ADDED))}")
+        changed = [n for n in files if z.read(n) != files[n][0]]
+        if changed or z.read(".arospkg/manifest.toml") != desc:
+            raise Failure(f"apkg-pack changed staged files: {changed or ['.arospkg/manifest.toml']}")
+        added = {n: z.read(n) for n in PACK_ADDED}
     partial.rename(path)
+    return added
 
 
 class Dist:
@@ -362,7 +402,7 @@ def cmd_binary(a, release):
     cfg = config_for(target)
     repo_head = head_clean()
     dist = Dist(a.dist)
-    name = f"{release['name']}-{release['version']}-{target}.zip"
+    name = f"{release['name']}-{release['release']}-{target}.zip"
     dist.claim(name)
     date = time.gmtime(int(git("log", "-1", "--format=%ct").decode().strip()))[:6]
     drawer = release["drawer"]
@@ -391,7 +431,8 @@ def cmd_binary(a, release):
     long_names = sorted({part for n in files for part in n.split("/") if len(part) > NAME_LIMIT})
     if long_names:
         raise Failure(f"archive names longer than {NAME_LIMIT} characters: {long_names}")
-    write_zip(a.dist / name, files, date)
+    for n, data in apkg_pack_zip(a.dist / name, files, date, target, release).items():
+        files[n] = (data, 0o100644)
     digest = dist.record(name)
     record = {"archive": name, "sha256": digest, "bytes": (a.dist / name).stat().st_size, "target": target,
               "build_id": manifest["build_id"], "repository_head": repo_head, "work_head": manifest["work_head"],
