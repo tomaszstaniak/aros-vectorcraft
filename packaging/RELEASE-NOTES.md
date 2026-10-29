@@ -26,15 +26,15 @@ Each package runs only on the system it was built for. `SHA256SUMS` lists the ch
 
 ## Installation
 
-Unpack the archive for your system anywhere writable and double-click VectorCraft. From the Shell, run `Stack 16777216` first, then `VectorCraft [--gui-renderer CPU|AUTO|GPU] [file]`. Settings and `VectorCraft.log` are kept in `VectorCraftData` inside the program drawer; to upgrade, unpack the new version to a new place and move `VectorCraftData` into it.
+Unpack the archive for your system anywhere writable and double-click VectorCraft. From the Shell, run `Stack 16777216` first, then `VectorCraft [--gui-renderer CPU|AUTO|GPU] [file]`. Settings and `VectorCraft.log` are kept in `VectorCraftData` inside the program drawer; to upgrade, unpack the new version to a new place and move `VectorCraftData` into it. The archive also holds a `.arospkg` drawer with the arospkg description; after unpacking by hand it can be deleted.
 
 ## Known limitations
 
 - Test release: every change redraws the whole window, so on slow machines and in emulators the interface follows with a delay.
 - One window: floating panels open inside the main window.
-- OpenGL: AROS One 1.3, ABIv11 2026.09 and mainline have only Mesa's software renderer, so `AUTO` uses CPU there; `GPU` works but is several times slower than CPU. Hardware OpenGL drivers have not been tested.
+- OpenGL: AROS One 1.3, ABIv11 2026.09 and mainline have only Mesa's software renderer, so `AUTO` uses CPU there; `GPU` works but is several times slower than CPU, and the window can show the frame from before your last key or click until the pointer moves. Hardware OpenGL drivers have not been tested.
 - Raspberry Pi: tested in an emulator only, not on a physical Pi. OpenGL has not been tested on Pi hardware, so `AUTO` uses CPU. `GPU` opens OpenGL; in the emulator (Mesa's software renderer) that stopped the whole system. Save your work before you try it.
-- On mainline AROS, after the first start from Workbench with `GUI_RENDERER=AUTO` since the system started, the VectorCraft drawer can stay in use until a reboot.
+- On mainline AROS, the first use of OpenGL (`AUTO` or `GPU`) since the system started leaves the VectorCraft drawer in use until a reboot when the program was started from Workbench or from a Shell inside its drawer. Starts with `CPU` are not affected.
 - Letters typed with a keymap other than ISO 8859-1 can arrive wrong; file and drawer names must be plain ASCII or UTF-8.
 - Clipboard text only. File > Print saves a PDF. No automatic updates. The automation server and plug-ins have not been tested on AROS.
 - `vectorcraft-cli` cannot write a file at the top of a volume named the AROS way (`RAM:x.png`); use `/RAM/x.png` or a drawer.
