@@ -8,9 +8,8 @@ separately; the programs use only libraries that are part of AROS itself.
 
 AROS link libraries
   The startup code, library stubs and the POSIX threads library
-  (libpthread) come from the mainline AROS SDK built from
-  aros-development-team/AROS commit
-  9802c8c03c4797946b5a55621a23e2d904c5e126, unchanged, and are covered by
+  (libpthread) come from the mainline AROS SDK of the nightly build of
+  2026-11-24, unchanged, and are covered by
   the AROS Public License, version 1.1 (AROS-LICENSE.txt,
   https://aros.sourceforge.io/license.html).
 

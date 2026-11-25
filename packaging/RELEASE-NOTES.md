@@ -1,4 +1,8 @@
-# VectorCraft 0.17.0-510-g9997ff02, test 3, for AROS
+# VectorCraft 0.17.0-510-g9997ff02, test 4, for AROS
+
+Test 4 is test 3 rebuilt for mainline x86_64 AROS nightly builds of 2026-11-24 or later; the program has no other changes. That nightly changed a system structure that programs are built against: test 3 does not work reliably on it, and test 4 does not run on earlier nightly builds, where test 3 stays the one to use. The ABIv11 and Raspberry Pi packages are not rebuilt and stay at test 3. Checked on the nightly of 2026-11-24 in an emulator: installation and verification with the package manager and a start from Workbench.
+
+The text below is that of test 3.
 
 First public test release of the AROS port of VectorCraft, a vector drawing program. It is built from VectorCraft's main branch at commit 9997ff02 of 2026-10-27, 510 commits after the 0.17.0 release, so it contains changes that 0.17.0 itself does not have.
 
@@ -6,10 +10,10 @@ First public test release of the AROS port of VectorCraft, a vector drawing prog
 
 | File | System |
 |---|---|
-| `VectorCraft-0.17.0-510-g9997ff02-test3-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3 / ABIv11 2026.09) |
-| `VectorCraft-0.17.0-510-g9997ff02-test3-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (built against AROS 9802c8c0, 2026-10-28) |
+| `VectorCraft-0.17.0-510-g9997ff02-test3-aros-x86_64-abiv11-pc.zip` | AROS x86_64, ABIv11 (AROS One 1.3 / ABIv11 2026.09); from the test 3 release |
+| `VectorCraft-0.17.0-510-g9997ff02-test4-aros-x86_64-abiv1-pc.zip` | AROS x86_64, mainline ABIv1 (nightly 2026-11-24 or later) |
 | `VectorCraft-0.17.0-510-g9997ff02-test3-aros-aarch64-abiv1-raspi.zip` | AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22); not for hosted Macaros |
-| `VectorCraft-0.17.0-510-g9997ff02-test3-source.zip` | Port sources, patches, pinned inputs and build recipe |
+| `VectorCraft-0.17.0-510-g9997ff02-test4-source.zip` | Port sources, patches, pinned inputs and build recipe |
 
 Each package runs only on the system it was built for. `SHA256SUMS` lists the checksums. The x86_64 packages can also be installed with arospkg 0.6 (`apkg install vectorcraft`) once the catalogue lists them. The Raspberry Pi package is not in the catalogue: its program is larger than apkg 0.5.0, the newest Pi client, accepts.
 

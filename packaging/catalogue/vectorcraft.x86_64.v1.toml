@@ -1,5 +1,5 @@
 id              = "vectorcraft"
-version         = "0.17.0-510-g9997ff02-test3"
+version         = "0.17.0-510-g9997ff02-test4"
 summary         = "Vector drawing program with SVG, PDF and EPS import and export (test release)"
 category        = "graphics/edit"
 license         = "MIT OR Apache-2.0"
@@ -14,7 +14,7 @@ post_install_notes = [
   "Test release: the CPU draws the whole window on every change, so the interface reacts slowly.",
   "GUI_RENDERER ToolType: CPU (default), AUTO or GPU. With Mesa software OpenGL, AUTO uses CPU and GPU is slower.",
   "Settings and VectorCraft.log are kept in VectorCraftData in the program drawer; keep it when upgrading.",
-  "Mainline x86_64 ABIv1, built against AROS 9802c8c0 (2026-10-28). Shell start: Stack 16777216 first.",
+  "Needs an AROS nightly of 2026-11-24 or later; for earlier nightlies use test 3 from the project page. Shell start: Stack 16777216 first.",
 ]
 
 # System libraries the programs open; gl.library only for GUI_RENDERER AUTO or GPU.
@@ -44,9 +44,9 @@ id   = "asl.library"
 
 [source]
 repository = "https://github.com/tomaszstaniak/aros-vectorcraft"
-revision   = "v0.17.0-510-g9997ff02-test3"
-archive    = "VectorCraft-0.17.0-510-g9997ff02-test3-source.zip"
-built_with = "x86_64 mainline ABIv1 (AROS 9802c8c0), GCC 10.5.0, Rust nightly 1.100 (rust-aros), egui 0.37 through egui-aros"
+revision   = "v0.17.0-510-g9997ff02-test4"
+archive    = "VectorCraft-0.17.0-510-g9997ff02-test4-source.zip"
+built_with = "x86_64 mainline ABIv1 (nightly 2026-11-24 SDK), GCC 10.5.0, Rust nightly 1.100 (rust-aros), egui 0.37 through egui-aros"
 
 [launch]
 executable = "VectorCraft"
