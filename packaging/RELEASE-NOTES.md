@@ -1,6 +1,6 @@
 # VectorCraft 0.17.0-510-g9997ff02, test 4, for AROS
 
-Test 4 is test 3 rebuilt for mainline x86_64 AROS nightly builds of 2026-11-24 or later; the program has no other changes. That nightly changed a system structure that programs are built against: test 3 does not work reliably on it, and test 4 does not run on earlier nightly builds, where test 3 stays the one to use. The ABIv11 and Raspberry Pi packages are not rebuilt and stay at test 3. Checked on the nightly of 2026-11-24 in an emulator: installation and verification with the package manager and a start from Workbench.
+Test 4 is test 3 rebuilt for mainline x86_64 AROS nightly builds of 2026-11-24 or later; the program has no other changes. That nightly changed a system structure that programs are built against: test 3 does not work reliably on it, and test 4 does not run on earlier nightly builds, where test 3 stays the one to use. The ABIv11 and Raspberry Pi packages are not rebuilt and stay at test 3. Checked on the nightly of 2026-11-24 in an emulator: installation and verification with the package manager, a start from Workbench and a new document.
 
 The text below is that of test 3.
 
