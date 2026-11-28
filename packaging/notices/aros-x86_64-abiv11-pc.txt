@@ -12,11 +12,12 @@ AROS link libraries
   AROS Public License, version 1.1 (AROS-LICENSE.txt,
   https://aros.sourceforge.io/license.html).
   The threads library is built from deadwood2/AROS commit
-  5376f09bc1ed0c36a12fbb096406013f8a046e89 (compiler/pthread) with one
-  change: a thread that is detached after it has finished no longer keeps
-  the program from exiting. The change is in the source archive under
-  patches/aros-pthread/; the programs do not replace or need any system
-  library.
+  5376f09bc1ed0c36a12fbb096406013f8a046e89 (compiler/pthread) with two
+  changes: a thread that is detached after it has finished no longer keeps
+  the program from exiting, and the code a detached thread ends in stays
+  loaded until the thread has left it. The changes are in the source
+  archive under patches/aros-pthread/; the programs do not replace or need
+  any system library.
 
 GCC runtime library
   libgcc from GCC 10.5, under the GNU General Public License version 3

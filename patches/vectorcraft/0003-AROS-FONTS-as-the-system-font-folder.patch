@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 08:45:47 +0100
+Subject: [PATCH] AROS: FONTS: as the system font folder
+
+---
+ crates/text/src/fontdb/dirs.rs | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/crates/text/src/fontdb/dirs.rs b/crates/text/src/fontdb/dirs.rs
+index 0ff448e5dd5037e4682a53314ffa63808b4b44b5..fc4762e15ce7815dc316412e0d927c6b2e7f44bd 100644
+--- a/crates/text/src/fontdb/dirs.rs
++++ b/crates/text/src/fontdb/dirs.rs
+@@ -150,6 +150,11 @@ pub fn system_font_dirs() -> Vec<PathBuf> {
+         }
+         #[cfg(windows)]
+         dirs.extend(registered_font_files(&dirs));
++    } else if cfg!(target_os = "aros") {
++        // FONTS: in the -nix path mode the program runs in. The Unix folders and fontconfig's
++        // files below would name volumes that do not exist (usr, etc, home), each a "Please
++        // insert volume" request.
++        dirs.push("/FONTS".into());
+     } else {
+         dirs.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(Into::into));
+         // The XDG data folders' `fonts` (fontconfig's user folder; Flatpak, Snap, NixOS and Guix

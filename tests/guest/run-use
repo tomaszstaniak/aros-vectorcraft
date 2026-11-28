@@ -1,0 +1,23 @@
+.KEY RUNDIR/A
+.BRA [
+.KET ]
+; The installed VectorCraft in RAM:pk used twice: the scripted session on shapes.svg (an ellipse,
+; Save As, undo, redo, Save, quit), its file read back by the CLI, then a start without a file.
+FailAt 21
+SetEnv RUST_LOG info
+RAM:pk/VectorCraft/vectorcraft-cli --version >[RUNDIR]/cli-version.txt
+Echo $RC >[RUNDIR]/cli-version.rc
+RAM:pk/VectorCraft/VectorCraft --version >[RUNDIR]/gui-version.txt
+RAM:pk/VectorCraft/VectorCraft --window 900x600 --test-steps RAM:ctest/steps-pkg.json RAM:ctest/shapes.svg
+Echo $RC >[RUNDIR]/gui.rc
+RAM:pk/VectorCraft/vectorcraft-cli info RAM:ctest/pkg-saved.vectorcraft >[RUNDIR]/saved-info.txt
+Echo $RC >[RUNDIR]/saved-info.rc
+Copy RAM:ctest/pkg-saved.vectorcraft [RUNDIR]/pkg-saved.vectorcraft
+RAM:pk/VectorCraft/VectorCraft --window 900x600 --test-steps RAM:ctest/steps-pkg2.json
+Echo $RC >[RUNDIR]/gui2.rc
+List RAM:pk/VectorCraft/VectorCraftData ALL >[RUNDIR]/data.txt
+Copy RAM:pk/VectorCraft/VectorCraftData/logs/#? [RUNDIR]/
+Copy RAM:pk/VectorCraft/VectorCraftData/ui.json [RUNDIR]/ui.json
+Copy RAM:pk/VectorCraft/BUILD.txt [RUNDIR]/BUILD.txt
+Copy RAM:ctest/pkg-a.png [RUNDIR]/pkg-a.png
+Copy RAM:ctest/pkg-b.png [RUNDIR]/pkg-b.png

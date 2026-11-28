@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 08:46:22 +0100
+Subject: [PATCH] AROS: the CLI runs its command on its own stack without DOS
+ requesters and ends rayon's pool; portable mode finds the program through DOS
+
+The CLI prints the release name the port's build gives with --version. The
+standard library for the Raspberry Pi has no current_exe, so portable mode
+(VectorCraft.portable beside the programs) also takes the program from
+VECTORCRAFT_PROGRAM, which the AROS programs set from DOS.
+---
+ apps/vectorcraft-cli/Cargo.toml  |  7 +++++
+ apps/vectorcraft-cli/src/main.rs | 47 +++++++++++++++++++++++++++++++-
+ apps/vectorcraft/src/profile.rs  |  7 ++++-
+ 3 files changed, 59 insertions(+), 2 deletions(-)
+
+diff --git a/apps/vectorcraft-cli/Cargo.toml b/apps/vectorcraft-cli/Cargo.toml
+index 376f4319039c7ccca7f5d16992c48253951ddb42..a291a8b3528cb2055d1191b0e230931d2dfdba5d 100644
+--- a/apps/vectorcraft-cli/Cargo.toml
++++ b/apps/vectorcraft-cli/Cargo.toml
+@@ -44,6 +44,13 @@ windows = { version = "0.62", features = ["Win32_Graphics_DirectWrite", "Win32_G
+ objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFString", "CFURL"] }
+ objc2-core-text = { version = "0.3", default-features = false, features = ["std", "CTFontManager"] }
+ 
++# The patched rayon-core (see the AROS port's crate patches) can end the global pool's threads,
++# which AROS's pthread library otherwise waits for forever when the program exits. Program start
++# on AROS (from the egui-aros repository, without egui), supplied by the port's build.
++[target.'cfg(target_os = "aros")'.dependencies]
++rayon-core = "1.13"
++aros-startup = "0.1"
++
+ [dev-dependencies]
+ tempfile = "3"
+ vectorcraft-testkit = { workspace = true }
+diff --git a/apps/vectorcraft-cli/src/main.rs b/apps/vectorcraft-cli/src/main.rs
+index 57ab103590a56f1fbca5880c52f7b4ed01aabba4..faeec0b0ab7d973be7f0e9b47962e5f452a143dc 100644
+--- a/apps/vectorcraft-cli/src/main.rs
++++ b/apps/vectorcraft-cli/src/main.rs
+@@ -191,7 +191,52 @@ fn help() -> Result<(), String> {
+     Ok(())
+ }
+ 
++/// The command thread's stack on AROS (see `main`).
++#[cfg(target_os = "aros")]
++const AROS_STACK: usize = 8 << 20;
++
++/// The release name the AROS port's build gives (`--version`), else the crate version.
++const RELEASE: &str = match option_env!("VECTORCRAFT_RELEASE") {
++    Some(r) => r,
++    None => env!("CARGO_PKG_VERSION"),
++};
++
+ fn main() -> ExitCode {
++    // AROS: Unix-style probes (/etc/localtime for local time, font and settings folders) name
++    // volumes that do not exist; DOS answers them with an error instead of an "insert volume"
++    // requester that stops the command until someone answers it.
++    #[cfg(target_os = "aros")]
++    aros_startup::quiet_dos();
++    // AROS: where VectorCraft.portable is looked for (settings in VectorCraftData beside the
++    // programs), for a standard library without current_exe (the Raspberry Pi's).
++    #[cfg(target_os = "aros")]
++    if let Ok(dir) = aros_startup::program_dir() {
++        aros_startup::set_default_env("VECTORCRAFT_PROGRAM", &dir.join("vectorcraft-cli"));
++    }
++    #[cfg(not(target_os = "aros"))]
++    let code = cli_main();
++    // An AROS program runs on the stack of whatever starts it: 40,960 bytes in an AROS One
++    // Shell, and whatever an MCP client's process creation gives. Parsing, layout and rendering
++    // overrun that, and the overrun takes the system down with it. The command runs on a thread
++    // with its own stack, so no caller has to know the size; the exit code comes back to the main
++    // task, because ending the process from another thread crashes on AROS.
++    #[cfg(target_os = "aros")]
++    let code = std::thread::Builder::new()
++        .name("vectorcraft-cli".into())
++        .stack_size(AROS_STACK)
++        .spawn(cli_main)
++        .map_err(|e| eprintln!("vectorcraft-cli: {e}"))
++        .and_then(|worker| worker.join().map_err(|_| eprintln!("vectorcraft-cli: the command panicked")))
++        .unwrap_or(ExitCode::FAILURE);
++    // AROS's pthread library joins every thread in its exit handler; rayon's idle global workers
++    // (HEIF pictures are decoded on them) never end by themselves, so a command that used them
++    // could not exit.
++    #[cfg(target_os = "aros")]
++    rayon_core::terminate_global_thread_pool();
++    code
++}
++
++fn cli_main() -> ExitCode {
+     // Before the first render: the cores the process may run on.
+     #[cfg(windows)]
+     windows_cores::install();
+@@ -221,7 +266,7 @@ fn main() -> ExitCode {
+         Some("perf") => perf::run(&args[1..]),
+         Some("-h" | "--help" | "help") | None => help(),
+         Some("-V" | "--version") => {
+-            outln!("vectorcraft-cli {}", env!("CARGO_PKG_VERSION"));
++            outln!("vectorcraft-cli {RELEASE}");
+             Ok(())
+         }
+         Some(other) => Err(format!("unknown subcommand `{other}`\n\n{}", usage())),
+diff --git a/apps/vectorcraft/src/profile.rs b/apps/vectorcraft/src/profile.rs
+index 0048323f034cd297fbe55b8688b7b17335d92b45..d7fa52f930efab0adfb561b4ec53d5369761414a 100644
+--- a/apps/vectorcraft/src/profile.rs
++++ b/apps/vectorcraft/src/profile.rs
+@@ -62,7 +62,12 @@ fn portable_dir() -> Option<PathBuf> {
+     DIR.get_or_init(|| {
+         let os = std::env::consts::OS;
+         let env = |key: &str| std::env::var_os(key);
+-        let install = install_dir(os, &std::env::current_exe().ok()?, &env)?;
++        let exe = std::env::current_exe().ok();
++        // AROS: the standard library for the Raspberry Pi has no current_exe; the AROS programs
++        // name themselves in VECTORCRAFT_PROGRAM (found with DOS) before this runs.
++        #[cfg(target_os = "aros")]
++        let exe = exe.or_else(|| std::env::var_os("VECTORCRAFT_PROGRAM").map(PathBuf::from));
++        let install = install_dir(os, &exe?, &env)?;
+         portable_dir_in(&install, platform_dir(os, false, &env).as_deref()).unwrap_or_else(|warning| {
+             // Only the log: `eprintln!` panics when standard error is a closed pipe, and the logger
+             // keeps early records for the log file.

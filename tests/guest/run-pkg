@@ -1,0 +1,25 @@
+.KEY RUNDIR/A,MACHINE/A
+.BRA [
+.KET ]
+; VectorCraft package check with apkg from a local index. Put into RAM:ctest: apkg (for this system),
+; vc.zip (the package), idx.json (a test index naming it), shapes.svg, steps-pkg.json,
+; steps-pkg2.json, run-use. Then: Execute RAM:ctest/run-pkg <results directory> <machine name>.
+; Everything stays under RAM:.
+FailAt 21
+Protect RAM:ctest/apkg +e
+MakeDir RAM:pk
+MakeDir RAM:pk/cache
+Copy RAM:ctest/vc.zip RAM:pk/cache/vectorcraft.zip
+RAM:ctest/apkg --version >[RUNDIR]/apkg-version.txt
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx.json show vectorcraft >[RUNDIR]/show.txt
+Echo $RC >[RUNDIR]/show.rc
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx.json install vectorcraft --yes >[RUNDIR]/install.txt
+Echo $RC >[RUNDIR]/install.rc
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx.json verify vectorcraft >[RUNDIR]/verify.txt
+Echo $RC >[RUNDIR]/verify.rc
+List RAM:pk ALL >[RUNDIR]/installed.txt
+Execute RAM:ctest/run-use [RUNDIR]
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx.json remove vectorcraft --yes >[RUNDIR]/remove.txt
+Echo $RC >[RUNDIR]/remove.rc
+List RAM:pk ALL >[RUNDIR]/after-remove.txt
+Echo "done" >[RUNDIR]/pkg-done.txt

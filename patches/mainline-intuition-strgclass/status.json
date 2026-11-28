@@ -1,0 +1,25 @@
+{
+  "id": "mainline-intuition-strgclass",
+  "upstream": "https://github.com/aros-development-team/AROS",
+  "base": "d68c0a784c79834622cb9069adbaf64e005b1151",
+  "pr": "https://github.com/aros-development-team/AROS/pull/1927",
+  "revision": "0ed67ed4546208292b0f34602c480a91d5615e41",
+  "status": "accepted",
+  "checked_upstream": "ed920d3fa2ac212cd72f1d0d981d475fb3c93b28",
+  "review_date": "2026-11-01",
+  "validation": [
+    "Host ASan/UBSan: extracted production helper overlap and invalid-capacity tests fail before, pass after.",
+    "Extended native gadget test builds and links for x86_64 v1 and v11 with -Wall -Wextra -Werror.",
+    "Updated strgclass.c compiles to x86_64 v1 object; existing pointer-sign warnings remain."
+  ],
+  "accepted_commit": "91cb9f421075456cb42e49b84f778d9ca53c7b88",
+  "merged_at": "2026-10-30T11:27:46Z",
+  "v1_applicability": "Merged in AROS mainline; no resubmission.",
+  "local_base_inclusion": false,
+  "local_base_inclusion_note": "Not verified per consuming SDK/runtime; preserve pinned-base patches.",
+  "validation_limits": [
+    "Updated intuition library and extended gadget test not rerun in AROS.",
+    "Other architecture builds and runtime not repeated for this revision."
+  ],
+  "next_action": "No resubmission. Verify inclusion per consuming SDK/runtime before removing a pinned-base patch."
+}

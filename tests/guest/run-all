@@ -1,0 +1,26 @@
+.KEY ALLDIR/A,MACHINE/A
+.BRA [
+.KET ]
+; The whole release check of one target from the payload in RAM:vc: smoke, OpenGL, and the
+; package upgrade with apkg (copied to RAM:ctest). The upgrade starts the previous release's
+; window, which must be closed by hand (its close gadget) for the script to go on.
+; Execute RAM:vc/run-all <results directory> <machine name>. Its key is not RUNDIR: the scripts it
+; runs set their own RUNDIR, which would replace it here.
+FailAt 21
+MakeDir [ALLDIR]/smoke [ALLDIR]/gpu [ALLDIR]/upgrade
+Execute RAM:vc/run-smoke [ALLDIR]/smoke
+Execute RAM:vc/run-gpu [ALLDIR]/gpu
+MakeDir RAM:ctest
+Copy RAM:vc/apkg RAM:ctest/ QUIET
+Copy RAM:vc/vc.zip RAM:ctest/ QUIET
+Copy RAM:vc/vc-old.zip RAM:ctest/ QUIET
+Copy RAM:vc/idx.json RAM:ctest/ QUIET
+Copy RAM:vc/idx-old.json RAM:ctest/ QUIET
+Copy RAM:vc/steps-pkg.json RAM:ctest/ QUIET
+Copy RAM:vc/steps-pkg2.json RAM:ctest/ QUIET
+Copy RAM:vc/shapes.svg RAM:ctest/ QUIET
+Copy RAM:vc/run-use RAM:ctest/ QUIET
+Copy RAM:vc/run-upgrade RAM:ctest/ QUIET
+Copy RAM:vc/run-pkg RAM:ctest/ QUIET
+Execute RAM:ctest/run-upgrade [ALLDIR]/upgrade [MACHINE]
+Echo "all done" >[ALLDIR]/all-done.txt

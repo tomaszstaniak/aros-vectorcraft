@@ -63,3 +63,9 @@ backup deleted in boot 3. Nothing else written to SYS:. RESULTS:strg-1028 left.
 ## Disposition
 
 Submitted: https://github.com/aros-development-team/AROS/pull/1927, revision b75e72e5ea75. Remaining: review; i386/arm/m68k builds, an aarch64 link and run of the patched intuition, and SMP runs not done.
+
+## Review follow-up, 2026-10-30
+
+Revision 0ed67ed4546208292b0f34602c480a91d5615e41 addresses the three review comments: use memmove for TextVal, guard nonpositive MaxChars in LongVal conversion, and use unsigned-compatible sizes in the test. The test also covers self/suffix overlap and capacities -1, 0 and 1 for TextVal and LongVal at creation and update. It can crash an unfixed system in the invalid-capacity LongVal cases.
+
+Host ASan/UBSan checks of the actual extracted helper bodies fail before and pass after. The extended native test builds and links for x86_64 v1/v11 with -Wall -Wextra -Werror; strgclass.c compiles to a v1 object with existing pointer-sign warnings. These checks do not repeat the earlier native runtime validation: the updated intuition library and extended test have not been run on AROS. Current upstream caecd66a9508acb0e9ef0a07169a14c33007b208 has the same strgclass.c as the original PR base. See status.json for current review state.

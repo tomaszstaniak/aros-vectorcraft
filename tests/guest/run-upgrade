@@ -1,0 +1,37 @@
+.KEY RUNDIR/A,MACHINE/A
+.BRA [
+.KET ]
+; Upgrade check with apkg from local indexes, everything under RAM:. Payload in RAM:ctest: apkg,
+; vc-old.zip + idx-old.json (the previous release), vc.zip + idx.json (the new package),
+; steps-pkg.json, steps-pkg2.json, shapes.svg, run-use.
+; Execute RAM:ctest/run-upgrade <results directory> <machine name>
+FailAt 21
+Protect RAM:ctest/apkg +e
+MakeDir RAM:pk
+MakeDir RAM:pk/cache
+Copy RAM:ctest/vc-old.zip RAM:pk/cache/vectorcraft.zip
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx-old.json install vectorcraft --yes >[RUNDIR]/old-install.txt
+Echo $RC >[RUNDIR]/old-install.rc
+Stack 16777216
+RAM:pk/VectorCraft/vectorcraft-cli info RAM:ctest/shapes.svg >[RUNDIR]/old-cli.txt
+Echo $RC >[RUNDIR]/old-cli.rc
+; The old release writes its settings (ui.json) into VectorCraftData when its window closes.
+RAM:pk/VectorCraft/VectorCraft --gui-renderer CPU RAM:ctest/shapes.svg
+Echo $RC >[RUNDIR]/old-gui.rc
+; A file of the user's own beside the settings must survive the upgrade.
+Echo "kept" >RAM:pk/VectorCraft/VectorCraftData/user-note.txt
+List RAM:pk/VectorCraft/VectorCraftData ALL >[RUNDIR]/data-before.txt
+Copy RAM:pk/VectorCraft/VectorCraftData/ui.json [RUNDIR]/old-ui.json
+Copy RAM:ctest/vc.zip RAM:pk/cache/vectorcraft.new.zip
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx.json outdated >[RUNDIR]/outdated.txt
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx.json upgrade vectorcraft --yes >[RUNDIR]/upgrade.txt
+Echo $RC >[RUNDIR]/upgrade.rc
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx.json verify vectorcraft >[RUNDIR]/verify.txt
+Echo $RC >[RUNDIR]/verify.rc
+List RAM:pk/VectorCraft ALL >[RUNDIR]/after-upgrade.txt
+Type RAM:pk/VectorCraft/VectorCraftData/user-note.txt >[RUNDIR]/user-note-after.txt
+Execute RAM:ctest/run-use [RUNDIR]
+RAM:ctest/apkg --root RAM:pk --machine [MACHINE] --index RAM:ctest/idx.json remove vectorcraft --yes >[RUNDIR]/remove.txt
+Echo $RC >[RUNDIR]/remove.rc
+List RAM:pk ALL >[RUNDIR]/after-remove.txt
+Echo "done" >[RUNDIR]/upgrade-done.txt

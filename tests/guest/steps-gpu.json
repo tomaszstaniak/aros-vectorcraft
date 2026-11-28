@@ -1,0 +1,10 @@
+[
+  {"frame": 8, "run": "shape.rectangle", "params": {"x": 40, "y": 40, "width": 120, "height": 80}},
+  {"frame": 12, "screenshot": "/RAM/vc/gpu-steps-a.png"},
+  {"frame": 14, "pick": ["/RAM/vc/gpu-saved.vectorcraft"], "run": "file.saveAs", "params": {"options": {}}},
+  {"frame": 20, "run": "edit.undo"},
+  {"frame": 22, "run": "edit.redo"},
+  {"frame": 24, "run": "file.save"},
+  {"frame": 30, "screenshot": "/RAM/vc/gpu-steps-b.png"},
+  {"frame": 34, "quit": true}
+]

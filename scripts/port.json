@@ -1,0 +1,24 @@
+{
+  "comment": "The app this Craft port builds. scripts/craft.py runs the shared Craft tools pinned in scripts/tooling.json; they read only this file for app-specific names.",
+  "id": "vectorcraft",
+  "name": "VectorCraft",
+  "env_prefix": "VECTORCRAFT",
+  "packages": {
+    "vectorcraft-aros": "VectorCraft",
+    "vectorcraft-cli": "vectorcraft-cli"
+  },
+  "tools": {},
+  "craft_fonts": {
+    "comment": "VectorCraft's text crate embeds every face of fonts/manifest.txt when CRAFT_FONTS_DIR is set. The Chinese, Japanese and Korean faces (about 42 MB) are left out: AROS loads a program into memory whole. The Arabic, Hebrew, Thai, Georgian, Devanagari and symbol faces (about 3 MB) stay.",
+    "manifests": [
+      "fonts/manifest.txt"
+    ],
+    "exclude_families": [
+      "Shippori Mincho",
+      "BIZ UDPGothic",
+      "BIZ UDMincho",
+      "Noto Sans CJK SC",
+      "NanumGothic"
+    ]
+  }
+}

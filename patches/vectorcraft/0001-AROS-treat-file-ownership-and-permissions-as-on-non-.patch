@@ -10,14 +10,15 @@ The AROS Rust target is unix-family, but AROS is single-user and has protection 
  crates/engine/src/cmd/recovery.rs          |  4 ++--
  crates/format/Cargo.toml                   |  4 +++-
  crates/format/src/atomic.rs                |  6 +++---
+ crates/ui-egui/Cargo.toml                  |  4 ++--
  crates/ui-egui/src/dialogs/save_for_web.rs | 12 ++++++------
- 5 files changed, 17 insertions(+), 13 deletions(-)
+ 6 files changed, 19 insertions(+), 15 deletions(-)
 
 diff --git a/crates/engine/Cargo.toml b/crates/engine/Cargo.toml
-index f495697ceba8c92f3f3df4f24d0489b25b192f5f..db402b941e93dd488f3f8a4addddb3592a48ce9e 100644
+index 836d4b7448beb76ade2533d777772a853198d9e5..b7f3574bbef2ad7370b5df9fbaa64467e48d520e 100644
 --- a/crates/engine/Cargo.toml
 +++ b/crates/engine/Cargo.toml
-@@ -47,7 +47,9 @@ log = { workspace = true }
+@@ -64,7 +64,9 @@ log = { workspace = true }
  
  # Whether a recovery area folder is this account's own (`FolderStore::own_area`). Already in
  # Cargo.lock (tempfile, ui-egui), so this adds no new crate.
@@ -27,9 +28,9 @@ index f495697ceba8c92f3f3df4f24d0489b25b192f5f..db402b941e93dd488f3f8a4addddb359
 +[target.'cfg(all(unix, not(target_os = "aros")))'.dependencies]
  rustix = { workspace = true, features = ["std", "process"] }
  
- [dev-dependencies]
+ # The tiles of a HEIC photo decode in parallel on native; wasm stays single-threaded.
 diff --git a/crates/engine/src/cmd/recovery.rs b/crates/engine/src/cmd/recovery.rs
-index 28f7bf592330a89e4f5e176609a23a399e1711df..01f917b580d65bdd8e9efd59de4f5355632f69bc 100644
+index 4cf070c6ae6c890d13aa18a91d0073463bd5ed39..6f4656b1d24a05301d56582c4031e11f28456d65 100644
 --- a/crates/engine/src/cmd/recovery.rs
 +++ b/crates/engine/src/cmd/recovery.rs
 @@ -259,7 +259,7 @@ impl FolderStore {
@@ -51,10 +52,10 @@ index 28f7bf592330a89e4f5e176609a23a399e1711df..01f917b580d65bdd8e9efd59de4f5355
              return Err(format!("{}: belongs to another account", dir.display()));
          }
 diff --git a/crates/format/Cargo.toml b/crates/format/Cargo.toml
-index 55fbe7056a5bf82a5a0ee774e1e3c6784a55ea38..e60c231fe60d4d06112b40901bec1921acad9a45 100644
+index fc6a060a5a441f363ac370d8837a5b79c2c1d42c..02ef4b10a48a3d0a1f761edf743bbf68c987a3a5 100644
 --- a/crates/format/Cargo.toml
 +++ b/crates/format/Cargo.toml
-@@ -18,7 +18,9 @@ flate2 = { workspace = true }
+@@ -19,7 +19,9 @@ flate2 = { workspace = true }
  # A plain fsync where a volume refuses the full flush (`sync_file`, atomic.rs), and the replaced
  # file's access ACL on Linux (`keep_permissions`). Already in Cargo.lock (tempfile), so this adds
  # no new crate.
@@ -66,10 +67,10 @@ index 55fbe7056a5bf82a5a0ee774e1e3c6784a55ea38..e60c231fe60d4d06112b40901bec1921
  
  [dev-dependencies]
 diff --git a/crates/format/src/atomic.rs b/crates/format/src/atomic.rs
-index f79b0bd37039aac169cfeb968b0c23106e6e8126..217d042f5bd6a48e8872c867fb4d2120d07c14f1 100644
+index 863c6fdd3476bc54c74e67262eb6ded5dbeb7c2a..0ea45ec3c98c355e6379798eb105dd5d52dff643 100644
 --- a/crates/format/src/atomic.rs
 +++ b/crates/format/src/atomic.rs
-@@ -132,7 +132,7 @@ fn keep_old(target: &Path, old: &Path) -> io::Result<()> {
+@@ -133,7 +133,7 @@ fn keep_old(target: &Path, old: &Path) -> io::Result<()> {
  fn create_private(path: &Path) -> io::Result<File> {
      let mut options = OpenOptions::new();
      options.write(true).create_new(true);
@@ -78,7 +79,7 @@ index f79b0bd37039aac169cfeb968b0c23106e6e8126..217d042f5bd6a48e8872c867fb4d2120
      std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
      options.open(path)
  }
-@@ -266,7 +266,7 @@ fn temp_path(target: &Path) -> io::Result<PathBuf> {
+@@ -272,7 +272,7 @@ fn temp_path(target: &Path) -> io::Result<PathBuf> {
  /// When the group or the ACL can't be kept, the replacement is readable by its owner alone rather
  /// than by people the old file didn't let in. (Unix; Windows files have none to keep beyond
  /// read-only, which makes the save fail as writing in place would.)
@@ -87,7 +88,7 @@ index f79b0bd37039aac169cfeb968b0c23106e6e8126..217d042f5bd6a48e8872c867fb4d2120
  fn keep_permissions(target: &Path, tmp: &Path) -> io::Result<()> {
      use std::os::unix::fs::{MetadataExt, PermissionsExt};
      // A new file: the default permissions.
-@@ -297,7 +297,7 @@ fn keep_acl(_: &Path, _: &Path) -> bool {
+@@ -309,7 +309,7 @@ fn keep_acl(_: &Path, _: &Path) -> bool {
      true
  }
  
@@ -96,11 +97,26 @@ index f79b0bd37039aac169cfeb968b0c23106e6e8126..217d042f5bd6a48e8872c867fb4d2120
  fn keep_permissions(_: &Path, _: &Path) -> io::Result<()> {
      Ok(())
  }
+diff --git a/crates/ui-egui/Cargo.toml b/crates/ui-egui/Cargo.toml
+index 8e30081d7f0ce68613ef60418c4b6b1df9dbb52d..32c7bdcc88d90bcfdf6dfd8015b5d46c604f40f1 100644
+--- a/crates/ui-egui/Cargo.toml
++++ b/crates/ui-egui/Cargo.toml
+@@ -62,8 +62,8 @@ web-time = "1"
+ 
+ # The current user's id (`geteuid`): Preview in Browser uses its temporary folder only when that
+ # user owns it (src/dialogs/save_for_web.rs). Already in Cargo.lock (tempfile), so this adds no
+-# new crate.
+-[target.'cfg(unix)'.dependencies]
++# new crate. Not on AROS: see crates/engine/Cargo.toml.
++[target.'cfg(all(unix, not(target_os = "aros")))'.dependencies]
+ rustix = { workspace = true, features = ["std", "process"] }
+ 
+ [dev-dependencies]
 diff --git a/crates/ui-egui/src/dialogs/save_for_web.rs b/crates/ui-egui/src/dialogs/save_for_web.rs
-index b31bfa308e150849637dbb45f2940ad4f2f8349d..c5277e7a2af65a6c587d35ed1981879dda2addbc 100644
+index 924f8c4078ae5ddd5c2b053d8511495348d67802..8457351ef7b93b14e134f7d01c291cada7e23e45 100644
 --- a/crates/ui-egui/src/dialogs/save_for_web.rs
 +++ b/crates/ui-egui/src/dialogs/save_for_web.rs
-@@ -283,7 +283,7 @@ fn new_folder(parent: &std::path::Path, prefix: &str) -> Result<String, String>
+@@ -291,7 +291,7 @@ fn new_folder(parent: &std::path::Path, prefix: &str) -> Result<String, String>
  }
  
  /// A builder for folders that only their owner can read, write or open (mode 0o700).
@@ -109,7 +125,7 @@ index b31bfa308e150849637dbb45f2940ad4f2f8349d..c5277e7a2af65a6c587d35ed1981879d
  fn private_folder() -> std::fs::DirBuilder {
      let mut b = std::fs::DirBuilder::new();
      std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-@@ -291,7 +291,7 @@ fn private_folder() -> std::fs::DirBuilder {
+@@ -299,7 +299,7 @@ fn private_folder() -> std::fs::DirBuilder {
  }
  
  /// A builder for folders: a plain one outside unix.
@@ -118,7 +134,7 @@ index b31bfa308e150849637dbb45f2940ad4f2f8349d..c5277e7a2af65a6c587d35ed1981879d
  fn private_folder() -> std::fs::DirBuilder {
      std::fs::DirBuilder::new()
  }
-@@ -314,26 +314,26 @@ fn refused(m: &std::fs::Metadata) -> Option<&'static str> {
+@@ -322,26 +322,26 @@ fn refused(m: &std::fs::Metadata) -> Option<&'static str> {
  }
  
  /// Whether the current user owns the file with metadata `m`.

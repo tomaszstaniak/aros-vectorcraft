@@ -1,16 +1,21 @@
 {
   "name": "VectorCraft",
-  "version": "0.17.0",
-  "release": "0.17.0-510-g9997ff02-test4",
-  "upstream_version": "main at 9997ff02 (v0.17.0-510-g9997ff02: 510 commits after v0.17.0), 2026-10-27",
+  "version": "0.24.1",
+  "release": "0.24.1",
+  "revision": 1,
+  "upstream_version": "0.24.1 (tag v0.24.1, f4922aa7)",
   "drawer": "VectorCraft",
   "stack": 16777216,
   "tooltypes": [
-    "GUI_RENDERER=CPU"
+    "GUI_RENDERER=AUTO"
   ],
   "icon_source": "work:assets/app-icon/hicolor/64x64/apps/ai.storyteller.vectorcraft.png",
-  "source_archive": "VectorCraft-0.17.0-510-g9997ff02-test4-source.zip",
-  "source_archive_exclude": [],
+  "source_archive": "VectorCraft-0.24.1-r1-source.zip",
+  "source_archive_exclude": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "project.json"
+  ],
   "notices": [
     "LICENSE-MIT",
     "LICENSE-APACHE",
@@ -37,7 +42,7 @@
   ],
   "targets": {
     "aros-x86_64-abiv11-pc": {
-      "system": "AROS x86_64, ABIv11 (AROS One 1.3 / ABIv11 2026.09)",
+      "system": "AROS x86_64, ABIv11 distributions",
       "sdk": "x86_64 ABIv11 SDK (deadwood2/AROS)",
       "notice": "notices/aros-x86_64-abiv11-pc.txt",
       "build": {
@@ -46,9 +51,8 @@
         "features": []
       },
       "limitations": [
-        "- OpenGL: AROS One 1.3 and ABIv11 2026.09 have only Mesa's software",
-        "  renderer, so AUTO uses CPU. GPU uses the software renderer, which works",
-        "  but is several times slower than CPU."
+        "- OpenGL: AROS One 1.3 has only Mesa's software renderer, so AUTO uses CPU",
+        "  there. GPU works with it but draws a frame in seconds; use it only to try."
       ]
     },
     "aros-x86_64-abiv1-pc": {
@@ -61,17 +65,15 @@
         "features": []
       },
       "limitations": [
-        "- OpenGL: with Mesa's software renderer AUTO uses CPU. GPU uses the",
-        "  software renderer, which works but is slower than CPU. Hardware OpenGL",
-        "  drivers have not been tested.",
-        "- After the first start from Workbench with GUI_RENDERER=AUTO since the",
-        "  system started, the VectorCraft drawer can stay in use until a reboot",
-        "  (it cannot be deleted or replaced before then)."
+        "- AUTO uses CPU on this system: a program that has opened OpenGL leaves its",
+        "  log file in use after it ends, and the Shell it ran in stops redirecting",
+        "  the output of later programs (seen on nightly 2026-11-10). GPU opens",
+        "  OpenGL all the same. Hardware OpenGL drivers have not been tested."
       ]
     },
     "aros-aarch64-abiv1-raspi": {
-      "system": "AROS on Raspberry Pi, AArch64 ABIv1 (system image 2026-08-22)",
-      "sdk": "Raspberry Pi AArch64 ABIv1 SDK from AROS-20260822-raspi-aarch64-system",
+      "system": "AROS on Raspberry Pi, AArch64 ABIv1 (nightly 2026-11-24 or later)",
+      "sdk": "Raspberry Pi AArch64 ABIv1 SDK of nightly 2026-11-24",
       "notice": "notices/aros-aarch64-abiv1-raspi.txt",
       "build": {
         "lto": "fat",
@@ -80,24 +82,26 @@
       },
       "limitations": [
         "- OpenGL has not been tested on Pi hardware, so AUTO uses CPU. GPU opens",
-        "  OpenGL; in an emulator (no VideoCore, Mesa's software renderer) that",
-        "  stopped the whole system. Save your work before you try GPU.",
-        "- Tested in an emulator only, with the keyboard; not on a physical Pi."
+        "  OpenGL; save your work before you try it.",
+        "- Tested in an emulator only, not on a physical Raspberry Pi."
       ]
     }
   },
   "limitations": [
-    "- One window. Floating panels open inside the main window, not as windows",
+    "- One window: floating panels open inside the main window, not in windows",
     "  of their own.",
-    "- Every change redraws the whole window. On slow machines and in emulators",
-    "  the interface follows with a delay.",
-    "- Letters typed with a keymap other than ISO 8859-1 can arrive wrong. File",
-    "  and drawer names must be plain ASCII or UTF-8.",
-    "- The clipboard carries text only. File > Print saves a PDF instead of",
-    "  printing.",
-    "- No automatic updates. The automation server (vectorcraft-cli mcp, the",
-    "  --control port) and plug-ins have not been tested on AROS.",
-    "- vectorcraft-cli cannot write a file at the top of a volume named the AROS",
-    "  way (RAM:x.png); write /RAM/x.png or into a drawer (RAM:out/x.png)."
-  ]
+    "- Changes of the whole window (scrolling, zooming, opening a dialog) redraw",
+    "  all of it; on slow machines and in emulators these follow with a delay.",
+    "- Fonts for Japanese, Korean and Chinese are not built in. Text in these",
+    "  scripts is shown as boxes unless a font for it is installed in FONTS:.",
+    "- The clipboard carries text to and from other programs; pictures and",
+    "  VectorCraft objects stay inside VectorCraft. File > Print saves a PDF.",
+    "- No automatic updates: install new versions with the AROS package manager",
+    "  or by unpacking the new archive. The MCP server (vectorcraft-cli mcp) has",
+    "  been tested only for its handshake and tool list on AROS; plug-ins and",
+    "  scripts have not been tested."
+  ],
+  "drawer_files": {
+    "VectorCraft.portable": "VectorCraft.portable"
+  }
 }

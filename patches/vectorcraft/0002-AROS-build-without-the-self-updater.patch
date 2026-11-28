@@ -1,0 +1,398 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 08:45:32 +0100
+Subject: [PATCH] AROS: build without the self-updater
+
+Releases for AROS come through the AROS package catalogue, and craft-update's
+HTTPS stack (hyper, rustls, aws-lc-sys) has no AROS build. The updater is left
+out on AROS as in the web build; Help > Check for Updates names apkg.
+---
+ crates/ui-egui/Cargo.toml        |   4 ++
+ crates/ui-egui/src/lib.rs        |   2 +-
+ crates/ui-egui/src/updates_ui.rs | 107 ++++++++++++++++---------------
+ 3 files changed, 61 insertions(+), 52 deletions(-)
+
+diff --git a/crates/ui-egui/Cargo.toml b/crates/ui-egui/Cargo.toml
+index 32c7bdcc88d90bcfdf6dfd8015b5d46c604f40f1..4c48ab24081602eaaef6e21c403adffca854da0b 100644
+--- a/crates/ui-egui/Cargo.toml
++++ b/crates/ui-egui/Cargo.toml
+@@ -53,6 +53,10 @@ log = { workspace = true }
+ # Floating panels open in OS windows of their own on the desktop; on the web they stay in the page.
+ [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ craft-ui = { workspace = true, features = ["native-windows"] }
++
++# AROS: no self-update. Releases come through the AROS package catalogue, and the updater's
++# HTTPS stack (hyper, rustls, aws-lc-sys) has no AROS build.
++[target.'cfg(not(any(target_arch = "wasm32", target_os = "aros")))'.dependencies]
+ craft-update = { workspace = true }
+ 
+ [target.'cfg(target_arch = "wasm32")'.dependencies]
+diff --git a/crates/ui-egui/src/lib.rs b/crates/ui-egui/src/lib.rs
+index e636f0520abcc3163ee42617c79b6a767b3b52d7..d542fbae42797cf4c4a7b6bd086af7e8f92092d9 100644
+--- a/crates/ui-egui/src/lib.rs
++++ b/crates/ui-egui/src/lib.rs
+@@ -7,7 +7,7 @@
+ 
+ /// VectorCraft as craft-update knows it, with its 128 px icon and accent colour: the update
+ /// prompt shows both, and an AppImage's menu entry gets the icon.
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+ pub const UPDATE_APP: craft_update::app::App = craft_update::app::App {
+     icon_png: Some(include_bytes!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.vectorcraft.png")),
+     accent: Some([0xe8, 0x57, 0x3f]),
+diff --git a/crates/ui-egui/src/updates_ui.rs b/crates/ui-egui/src/updates_ui.rs
+index 77a00c33a5f24ae652523fac48ef8c3c9fcdae61..6477d100420a552fd74a00cf5b992407ea84fca9 100644
+--- a/crates/ui-egui/src/updates_ui.rs
++++ b/crates/ui-egui/src/updates_ui.rs
+@@ -4,48 +4,48 @@ use serde_json::Value;
+ 
+ use crate::VectorcraftApp;
+ 
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+ use craft_update::updater::{Action, Status, Updater};
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+ use craft_update::{CheckResultDialog, CheckResultResponse};
+ 
+ pub(crate) struct Runtime {
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     updater: Updater,
+     /// The desktop app turns the check at start on; tests and the web build leave it off.
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     startup_check: bool,
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     check_requested: bool,
+     /// The context of the last frame, to wake the UI when a check is queued from a menu callback.
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     repaint: Option<egui::Context>,
+     /// Whether an update dialog held the input in the last frame.
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     was_blocking: bool,
+-    /// The web build has no updater; its window only says so.
+-    #[cfg(target_arch = "wasm32")]
++    /// The web and AROS builds have no updater; their window only says so.
++    #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+     pub(crate) manual_window_open: bool,
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+     pub(crate) status_message: Option<String>,
+ }
+ 
+ impl Default for Runtime {
+     fn default() -> Self {
+         Self {
+-            #[cfg(not(target_arch = "wasm32"))]
++            #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+             updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")),
+-            #[cfg(not(target_arch = "wasm32"))]
++            #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+             startup_check: false,
+-            #[cfg(not(target_arch = "wasm32"))]
++            #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+             check_requested: false,
+-            #[cfg(not(target_arch = "wasm32"))]
++            #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+             repaint: None,
+-            #[cfg(not(target_arch = "wasm32"))]
++            #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+             was_blocking: false,
+-            #[cfg(target_arch = "wasm32")]
++            #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+             manual_window_open: false,
+-            #[cfg(target_arch = "wasm32")]
++            #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+             status_message: None,
+         }
+     }
+@@ -53,7 +53,7 @@ impl Default for Runtime {
+ 
+ impl VectorcraftApp {
+     /// Whether the app asks for a newer release when it starts (off until the desktop app turns it on).
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     pub fn set_startup_update_check(&mut self, on: bool) {
+         self.updates_rt.startup_check = on;
+     }
+@@ -61,14 +61,14 @@ impl VectorcraftApp {
+     /// Starts the install helper of an update that is ready, so it installs once the process has
+     /// exited (does nothing when no update is ready). Call it in `on_exit` when the process ends
+     /// there, since the app is then never dropped.
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     pub fn start_pending_update(&mut self) {
+         self.updates_rt.updater.start_pending_update();
+     }
+ }
+ 
+ pub(crate) fn check(app: &mut VectorcraftApp) -> Result<Value, String> {
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     {
+         app.updates_rt.check_requested = true;
+         if let Some(ctx) = &app.updates_rt.repaint {
+@@ -76,16 +76,21 @@ pub(crate) fn check(app: &mut VectorcraftApp) -> Result<Value, String> {
+         }
+         Ok(Value::Null)
+     }
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+     {
+         app.updates_rt.manual_window_open = true;
+-        app.updates_rt.status_message = Some("Update check is not supported in the web browser.".into());
++        app.updates_rt.status_message = Some(if cfg!(target_os = "aros") {
++            // AROS: releases come through the AROS package catalogue.
++            "VectorCraft for AROS is updated with the AROS package manager: apkg upgrade vectorcraft".into()
++        } else {
++            "Update check is not supported in the web browser.".into()
++        });
+         Ok(Value::Null)
+     }
+ }
+ 
+ pub(crate) fn tick(app: &mut VectorcraftApp, ctx: &egui::Context) {
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     {
+         let rt = &mut app.updates_rt;
+         rt.repaint = Some(ctx.clone());
+@@ -96,14 +101,14 @@ pub(crate) fn tick(app: &mut VectorcraftApp, ctx: &egui::Context) {
+         }
+         rt.updater.tick(ctx);
+     }
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+     let _ = (app, ctx);
+ }
+ 
+ /// Whether the check result window shows: for every status but idle (a requested check, and the
+ /// first start after an update, which reports that it installed or why it failed), and never
+ /// over the startup prompt.
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+ fn result_window_shows(status: &Status, prompt_open: bool) -> bool {
+     !prompt_open && !matches!(status, Status::Idle)
+ }
+@@ -111,12 +116,12 @@ fn result_window_shows(status: &Status, prompt_open: bool) -> bool {
+ /// Whether the update prompt or the modal result window is open: keys, tool keys and clipboard
+ /// events then stay out of the documents behind it, and the app's other windows take no input.
+ pub(crate) fn blocks_input(app: &VectorcraftApp) -> bool {
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     {
+         let updater = &app.updates_rt.updater;
+         holds_keyboard(updater.status(), updater.prompt_open())
+     }
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+     {
+         let _ = app;
+         false
+@@ -125,7 +130,7 @@ pub(crate) fn blocks_input(app: &VectorcraftApp) -> bool {
+ 
+ /// The prompt is modal, and so is the result window for every status but [`Status::Updated`], a
+ /// notice that leaves the app usable behind it.
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+ fn holds_keyboard(status: &Status, prompt_open: bool) -> bool {
+     prompt_open || !matches!(status, Status::Idle | Status::Updated(_))
+ }
+@@ -134,7 +139,7 @@ fn holds_keyboard(status: &Status, prompt_open: bool) -> bool {
+ /// export, file opening, plug-in filter or Image Trace is running, no action is playing, no dialog
+ /// or file dialog is open, and no tool is in the middle of a drag or an edit it computes on
+ /// another thread.
+-#[cfg(not(target_arch = "wasm32"))]
++#[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+ fn safe_to_close(app: &VectorcraftApp) -> bool {
+     let session = &app.session;
+     !crate::unsaved::any_dirty(app)
+@@ -149,7 +154,7 @@ fn safe_to_close(app: &VectorcraftApp) -> bool {
+ }
+ 
+ pub(crate) fn show(app: &mut VectorcraftApp, ctx: &egui::Context) {
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     {
+         // An installation, and the close for a ready update, wait for unsaved and running work.
+         let safe = safe_to_close(app);
+@@ -177,7 +182,7 @@ pub(crate) fn show(app: &mut VectorcraftApp, ctx: &egui::Context) {
+         app.updates_rt.was_blocking = blocking;
+     }
+ 
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+     if app.updates_rt.manual_window_open {
+         let mut open = true;
+         egui::Window::new(tl!("VectorCraft Updates"))
+@@ -202,20 +207,20 @@ pub(crate) fn show(app: &mut VectorcraftApp, ctx: &egui::Context) {
+ }
+ 
+ /// Opens the update prompt for a test in another module.
+-#[cfg(all(test, not(target_arch = "wasm32")))]
++#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "aros"))))]
+ pub(crate) fn open_prompt_for_test(app: &mut VectorcraftApp) {
+     tests::offer(app);
+ }
+ 
+ /// Opens the result window of a running check for a test in another module.
+-#[cfg(all(test, not(target_arch = "wasm32")))]
++#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "aros"))))]
+ pub(crate) fn open_result_window_for_test(app: &mut VectorcraftApp, ctx: &egui::Context) {
+     app.updates_rt.updater = tests::isolated_updater(env!("CARGO_PKG_VERSION"), "result");
+     app.updates_rt.updater.check_now(ctx);
+ }
+ 
+ /// Closes the update prompt and the result window for a test in another module.
+-#[cfg(all(test, not(target_arch = "wasm32")))]
++#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "aros"))))]
+ pub(crate) fn close_dialogs_for_test(app: &mut VectorcraftApp) {
+     app.updates_rt.updater = tests::isolated_updater(env!("CARGO_PKG_VERSION"), "closed");
+ }
+@@ -228,13 +233,13 @@ mod tests {
+     use vectorcraft_tools::{PointerEvent, PointerKind};
+ 
+     /// The folder that holds `name`'s update records.
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn update_root(name: &str) -> std::path::PathBuf {
+         std::env::temp_dir().join(format!("vectorcraft-updates-{}-{name}", std::process::id()))
+     }
+ 
+     /// An updater that reads its records and the launcher's pins only under [`update_root`].
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     pub(super) fn isolated_updater(version: &str, name: &str) -> Updater {
+         let root = update_root(name);
+         Updater::new(&crate::UPDATE_APP, version)
+@@ -243,7 +248,7 @@ mod tests {
+             .with_pins_path(root.join("pins.json"))
+     }
+ 
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     pub(super) fn offer(app: &mut VectorcraftApp) {
+         app.updates_rt.updater = isolated_updater(env!("CARGO_PKG_VERSION"), "prompt");
+         app.updates_rt.updater.offer(craft_update::Release {
+@@ -256,7 +261,7 @@ mod tests {
+     }
+ 
+     /// An app with one saved document holding a selected rectangle.
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn app_with_saved_object() -> VectorcraftApp {
+         let services = crate::Services { write: Some(Box::new(|_: &str, _: &[u8]| Ok(()))), ..Default::default() };
+         let mut app = VectorcraftApp::new(Session::new(), services);
+@@ -267,13 +272,13 @@ mod tests {
+         app
+     }
+ 
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn press(key: egui::Key) -> egui::Event {
+         egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+     }
+ 
+     /// One frame in the app's order: the shortcuts read the input, then the update dialogs draw.
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn frame(app: &mut VectorcraftApp, ctx: &egui::Context, events: Vec<egui::Event>) {
+         let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+             crate::shortcuts::handle(app, ui.ctx());
+@@ -283,7 +288,7 @@ mod tests {
+     }
+ 
+     /// A Copy, the Pen tool's key and Delete, in one frame each: none of them may act.
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn assert_keys_do_nothing(app: &mut VectorcraftApp, ctx: &egui::Context) {
+         let tool = app.session.tool_id();
+         let mut reached = Vec::new();
+@@ -308,9 +313,9 @@ mod tests {
+     #[test]
+     fn default_runtime_is_idle() {
+         let rt = Runtime::default();
+-        #[cfg(target_arch = "wasm32")]
++        #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+         assert!(!rt.manual_window_open);
+-        #[cfg(not(target_arch = "wasm32"))]
++        #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+         {
+             assert!(!rt.startup_check);
+             assert!(!rt.updater.prompt_open());
+@@ -319,7 +324,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn result_window_shows_every_status_but_idle() {
+         let shown = [
+             Status::Checking,
+@@ -339,7 +344,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn startup_prompt_shows_and_closes() {
+         let mut app = VectorcraftApp::new(Session::new(), Default::default());
+         let ctx = egui::Context::default();
+@@ -360,7 +365,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn the_prompt_and_the_result_window_hold_the_keyboard_but_the_updated_notice_does_not() {
+         for status in [
+             Status::Checking,
+@@ -380,7 +385,7 @@ mod tests {
+ 
+     /// The update prompt, drawn: keys stop at it, Escape closes it, and the next key acts again.
+     #[test]
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn keys_do_not_reach_the_document_behind_the_update_prompt() {
+         let mut app = app_with_saved_object();
+         let ctx = egui::Context::default();
+@@ -398,7 +403,7 @@ mod tests {
+ 
+     /// The result window of a check that is still running, drawn: keys stop at it too.
+     #[test]
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn keys_do_not_reach_the_document_behind_the_check_result_window() {
+         let mut app = app_with_saved_object();
+         let ctx = egui::Context::default();
+@@ -411,7 +416,7 @@ mod tests {
+ 
+     /// The notice of a finished update, drawn: the keys act behind it.
+     #[test]
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn keys_reach_the_document_behind_the_updated_notice() {
+         let mut app = app_with_saved_object();
+         let ctx = egui::Context::default();
+@@ -429,7 +434,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn unsaved_changes_dialogs_and_running_work_hold_an_update_back() {
+         let mut app = app_with_saved_object();
+         assert!(safe_to_close(&app));
+@@ -485,7 +490,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     fn a_gesture_or_a_tools_edit_holds_an_update_back() {
+         let mut app = app_with_saved_object();
+         let view = app.view_info();

@@ -1,31 +1,62 @@
-# Patch workflow
+---
+type: guide
+updated: 2026-11-28
+---
 
-`upstream/vectorcraft/` is the clean upstream checkout at the commit pinned in
-`upstreams.json`. Never edit it. `work/vectorcraft/` is the editable copy, created from the
-pin and `patches/vectorcraft/series` by `python3 scripts/vc.py materialize`; it is never
-recreated or reset by the tools.
+# Source and patch workflow
 
-To change VectorCraft for AROS:
+## Registered source
 
-1. Commit the change in `work/vectorcraft/`, one commit per logical change. The commit message
-   becomes the patch description: say what the change does on AROS, why, which targets it
-   affects and how it was checked.
-2. `python3 scripts/vc.py export` writes the work copy's commits since the pin into
-   `patches/vectorcraft/` and checks that the new series rebuilds the work copy's tree before
-   it replaces anything.
-3. Review `git diff patches/`, then commit the patches and the series in this repository.
-4. `python3 scripts/vc.py verify` rebuilds the series in a temporary directory and compares
-   it with the work copy.
+`upstreams.json` maps `vectorcraft` (the build source) to its URL and full commit. `patches/vectorcraft/series`
+lists the patches in order (currently nine, on the 0.24.1 base). The example manifest is illustrative only.
 
-Other external sources that need changes have their own series:
+`scripts/craft.py` implements the procedure below: `fetch` (clone, or verify origin,
+pin and clean state), `materialize` (new work copy only), `export` (work-copy
+commits since the pin to numbered patches and `series`; refuses uncommitted
+changes) and `verify` (rebuild the series in a new temporary directory whose path
+contains spaces and compare its Git tree, contents and modes, with the work
+copy's committed tree).
 
-- `patches/crates/`: crates.io crates built from a patched copy. `crates.json` records each
-  crate's registry checksum and the tree hash of the reviewed result; `vc.py crates` prepares
-  them under `build/<target>/crates/`, never in the Cargo registry.
-- `patches/aros-pthread/`: the change to AROS `compiler/pthread` linked into the ABIv11 and
-  Raspberry Pi programs (a thread detached after it finished no longer blocks the exit).
-- `patches/libc-aros/`: changes to rust-aros's `libc-aros` (currently none).
+## Materialization procedure
 
-Do not edit Cargo registry sources, a shared toolchain or an SDK. Preserve local commits,
-stashes and untracked files before moving a work copy aside; `verify` compares committed
-trees and is not a backup.
+1. Read and validate the active manifest and explicit series. Fetch the registered
+   URL into a new `upstream/vectorcraft` checkout, detach at the exact full commit,
+   verify its identity and clean state. Never edit that clean source.
+2. Create a separate new `work/vectorcraft` from the pin and apply the ordered series.
+   Stop on conflicts; record the pin, series order and patch content digests.
+3. Before reusing work, check its expected inputs against the current manifest and
+   patches. Reconstruct independently in a temporary directory and compare actual
+   saved source contents and modes before claiming synchronization.
+4. Never overwrite or reset an existing work copy as bootstrap behavior. Preserve
+   staged, unstaged, untracked and valuable ignored files, branches, commits,
+   stashes and reflogs. A clean status or stored digest does not preserve history
+   or establish source equivalence. Refuse destructive recreation unless both are
+   verified independently and recovery is retained outside the replaced copy.
+
+## Saving changes
+
+Save every external-source modification in `patches/vectorcraft/` as a numbered,
+coherent patch. Use the full Git binary patch format for binary changes; a text-only
+`Binary files differ` notice is insufficient. Save only the delta following earlier
+patches and append its exact filename to `series`. Never overwrite existing patches
+by calculating a number from file count.
+
+Work-copy commits are the patches: write the metadata into the commit message, then
+`export`. Each patch records title, repository, author, date, base commit, prerequisites,
+problem, rationale, platform scope, upstream status (`candidate`, `local-only`,
+`submitted`, or `accepted`), actual verification and a removal condition if temporary.
+Submitted/accepted changes require the upstream link. Explicitly mark unrun tests.
+Save patch, metadata and series atomically enough to retain recoverable edits if
+interrupted; do not advance a claimed baseline after failure. Commit the preserved
+patch before any separately authorized upstream submission. Work-copy commits or a
+remote fork do not replace this repository's patch record.
+
+## Reproduction and pin changes
+
+Validate the complete series in a separate temporary reconstruction without changing
+active copies. Compare contents, binary bytes and executable modes with the expected
+saved tree. Test stale inputs, unsaved changes, stashes/branches/reflogs, amended
+commits, successive patches and binary changes before relying on new tooling.
+Preserve the previous series before updating the base: the series 0001-0012 on main 9997ff02 (the 0.17.0-510-g9997ff02 test releases) is in this repository's Git history. Retire accepted
+patches only when the new pinned source contains them; retain their provenance in
+history. `python3 scripts/craft.py update-check --upstream-commit <full commit> --output report.json` tries the series on a newer upstream commit without changing this repository. A source reconstruction check proves neither a build nor runtime behavior.

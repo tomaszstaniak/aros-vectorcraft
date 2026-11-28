@@ -1,0 +1,641 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 08:49:47 +0100
+Subject: [PATCH] AROS host: VectorCraft in an Intuition window through
+ egui-aros
+
+apps/vectorcraft-aros runs vectorcraft-ui-egui in one Intuition window through
+egui-aros (CPU, AUTO or GPU renderer; ASL requesters; clipboard text; OpenURL).
+It shares the desktop app's settings, settings-folder and log code; settings
+are kept in VectorCraftData beside the program (portable mode). --screenshot
+and --test-steps are test aids; the log ends with a frame summary and the
+threads still present at shutdown.
+---
+ apps/vectorcraft-aros/Cargo.toml  |  42 +++
+ apps/vectorcraft-aros/src/main.rs | 568 ++++++++++++++++++++++++++++++
+ 2 files changed, 610 insertions(+)
+ create mode 100644 apps/vectorcraft-aros/Cargo.toml
+ create mode 100644 apps/vectorcraft-aros/src/main.rs
+
+diff --git a/apps/vectorcraft-aros/Cargo.toml b/apps/vectorcraft-aros/Cargo.toml
+new file mode 100644
+index 0000000000000000000000000000000000000000..8542452cdab35ae89123ee985a34ee8ff6ef8e64
+--- /dev/null
++++ b/apps/vectorcraft-aros/Cargo.toml
+@@ -0,0 +1,42 @@
++[package]
++name = "vectorcraft-aros"
++description = "VectorCraft on AROS: the egui interface in an Intuition window, through egui-aros"
++version.workspace = true
++edition.workspace = true
++license.workspace = true
++publish = false
++
++# The window, input, renderers, requesters, clipboard, character set and start-up data come
++# from egui-aros (shared by the Craft AROS ports); this crate has no `unsafe` code of its own.
++# Not the workspace lints: their `forbid(unsafe_code)` also rejects the start-up stack record
++# that aros-startup's minimum_stack! macro writes.
++
++[lints.clippy]
++dbg_macro = "warn"
++todo = "warn"
++
++[[bin]]
++name = "VectorCraft"
++path = "src/main.rs"
++
++[dependencies]
++vectorcraft-engine = { workspace = true, features = ["bundled-fonts", "heif"] }
++vectorcraft-ui-egui = { workspace = true }
++vectorcraft-text = { workspace = true }
++egui = { workspace = true }
++# Built from a pinned egui-aros commit with its crate patches: see the port's scripts/craft.py.
++# OpenGL is compiled in and chosen at run time (CPU, AUTO or GPU).
++egui-aros = { version = "0.1", features = ["asl", "glow"] }
++# Its minimum_stack! macro (egui_aros::startup is the same crate).
++aros-startup = "0.1"
++serde_json = { workspace = true }
++log = { workspace = true }
++# The desktop app's logger (shared through #[path]) dates its lines with it.
++chrono = { workspace = true }
++# --screenshot writes PNG.
++image = { workspace = true }
++
++# The patched rayon-core (see the port's crate patches) can end the global pool's threads, which
++# AROS's pthread library otherwise waits for forever when the program exits.
++[target.'cfg(target_os = "aros")'.dependencies]
++rayon-core = "1.13"
+diff --git a/apps/vectorcraft-aros/src/main.rs b/apps/vectorcraft-aros/src/main.rs
+new file mode 100644
+index 0000000000000000000000000000000000000000..3c7c1ff3d88e6698c2e30088b9bbbd188fd1e07e
+--- /dev/null
++++ b/apps/vectorcraft-aros/src/main.rs
+@@ -0,0 +1,568 @@
++//! VectorCraft on AROS.
++//!
++//! The desktop app's interface (`vectorcraft-ui-egui`) runs in an Intuition window through
++//! egui-aros: winit and egui-winit for the window and input, the CPU renderer or OpenGL for the
++//! pixels (chosen at run time: `--gui-renderer`, ToolType `GUI_RENDERER`), ASL requesters for
++//! files, the system clipboard for text. Documents are rendered by the CPU (vello_cpu), as on the
++//! other platforms. This file follows the desktop app's start (apps/vectorcraft/src/main.rs) and
++//! shares its settings, settings-folder and log code. Not here: the single-instance hand-off, the
++//! control channel (`--control`), printing, the update check and floating panels in windows of
++//! their own.
++//!
++//! Settings, the logs, Data Recovery and the user's libraries are kept in `VectorCraftData`
++//! beside the program: the package carries VectorCraft's portable-mode marker
++//! (`VectorCraft.portable`).
++//!
++//! `--screenshot <file>` writes the window's pixels after `--screenshot-frames` frames (20 by
++//! default) and quits; `--test-steps <file.json>` runs commands at given frames. Frames shown
++//! while a file opens or saves in the background are not counted. Both are test aids for systems
++//! where the window cannot be watched or driven reliably.
++#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
++
++use std::cell::RefCell;
++use std::collections::VecDeque;
++use std::rc::Rc;
++use std::time::Duration;
++
++use egui_aros::{launch, startup};
++use vectorcraft_engine::Session;
++use vectorcraft_engine::cmd::fileio;
++use vectorcraft_ui_egui::{FilePick, Services, VectorcraftApp};
++
++// The desktop app's code, unchanged: where ui.json and the user's folders live (portable mode:
++// VectorCraftData beside the program), how they are read and written, and the logger.
++#[path = "../../vectorcraft/src/logging.rs"]
++mod logging;
++#[path = "../../vectorcraft/src/prefs.rs"]
++mod prefs;
++#[path = "../../vectorcraft/src/prefs_dir.rs"]
++mod prefs_dir;
++
++/// The release name the port's build gives (`--version`, the log), else the crate version.
++const RELEASE: &str = match option_env!("VECTORCRAFT_RELEASE") {
++    Some(r) => r,
++    None => env!("CARGO_PKG_VERSION"),
++};
++const TARGET: &str = match option_env!("VECTORCRAFT_BUILD_TARGET") {
++    Some(t) => t,
++    None => "aros",
++};
++
++const USAGE: &str = "\
++VectorCraft for AROS
++
++Usage: VectorCraft [--gui-renderer CPU|AUTO|GPU] [--window <w>x<h>]
++                   [--screenshot <file.png> [--screenshot-frames <n>]] [--test-steps <file.json>] [FILE...]
++
++  --version, -V   print the version and exit
++
++Settings and the logs (logs/vectorcraft.log) are kept in VectorCraftData in the program's drawer.
++Without a window (converting, scripting, the MCP server), use vectorcraft-cli.
++";
++
++static SHELL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
++
++/// The desktop app's logger, to standard error only for a Shell start: a Workbench start has
++/// none, and writing there would open a console window.
++fn install_logger(shell: bool) -> Option<&'static logging::AppLogger> {
++    static LOGGER: std::sync::OnceLock<logging::AppLogger> = std::sync::OnceLock::new();
++    let spec = std::env::var("RUST_LOG").ok().filter(|s| !s.trim().is_empty());
++    let filter = logging::Filter::parse(spec.as_deref().unwrap_or(logging::DEFAULT_FILTER));
++    let max = filter.max();
++    let logger = LOGGER.get_or_init(|| logging::AppLogger::new(filter, shell));
++    log::set_logger(logger).ok()?;
++    log::set_max_level(max);
++    let default_hook = std::panic::take_hook();
++    std::panic::set_hook(Box::new(move |info| {
++        log::error!("VectorCraft internal error: {info}");
++        default_hook(info);
++    }));
++    Some(logger)
++}
++
++struct Options {
++    files: Vec<String>,
++    window: Option<(i32, i32)>,
++    screenshot: Option<String>,
++    screenshot_frames: u64,
++    test_steps: Vec<Step>,
++}
++
++/// One step of `--test-steps`: at frame `frame`, run a command as the menus do (`run`, with
++/// `params`), open a file (`open`), answer the next file requesters (`pick`, a list of names, one
++/// per requester), take a screenshot or quit. Each step is logged.
++#[derive(Debug)]
++struct Step {
++    frame: u64,
++    run: Option<String>,
++    params: serde_json::Value,
++    open: Option<String>,
++    pick: Option<Vec<String>>,
++    screenshot: Option<String>,
++    quit: bool,
++}
++
++fn read_steps(path: &str) -> Result<Vec<Step>, String> {
++    let text = std::fs::read_to_string(path).map_err(|e| format!("--test-steps {path}: {e}"))?;
++    let list: Vec<serde_json::Value> = serde_json::from_str(&text).map_err(|e| format!("--test-steps {path}: {e}"))?;
++    let mut steps = Vec::new();
++    for v in list {
++        let frame = v.get("frame").and_then(serde_json::Value::as_u64).ok_or_else(|| format!("--test-steps: a step without a frame: {v}"))?;
++        let text = |k: &str| v.get(k).and_then(serde_json::Value::as_str).map(str::to_owned);
++        steps.push(Step {
++            frame,
++            run: text("run"),
++            params: v.get("params").cloned().unwrap_or_else(|| serde_json::json!({})),
++            open: text("open"),
++            pick: v.get("pick").and_then(serde_json::Value::as_array).map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_owned)).collect()),
++            screenshot: text("screenshot"),
++            quit: v.get("quit").and_then(serde_json::Value::as_bool).unwrap_or(false),
++        });
++    }
++    steps.sort_by_key(|s| s.frame);
++    Ok(steps)
++}
++
++/// The Shell arguments after the renderer choice was taken out. Document names are resolved by
++/// DOS now, in the directory they were typed in (volumes, assigns, relative names, `/` parents).
++fn parse_args(args: Vec<String>) -> Result<Option<Options>, String> {
++    let mut o = Options { files: Vec::new(), window: None, screenshot: None, screenshot_frames: 20, test_steps: Vec::new() };
++    let mut args = args.into_iter();
++    while let Some(a) = args.next() {
++        match a.as_str() {
++            "--help" | "-h" => {
++                println!("{USAGE}\n{}", launch::HELP);
++                return Ok(None);
++            }
++            "--version" | "-V" => {
++                println!("VectorCraft {RELEASE} for AROS ({TARGET})");
++                return Ok(None);
++            }
++            "--control" => return Err("--control: the control channel is not available on AROS".to_owned()),
++            "--window" => {
++                let v = args.next().unwrap_or_default();
++                let size = v.split_once('x').and_then(|(w, h)| Some((w.parse().ok()?, h.parse().ok()?)));
++                o.window = Some(size.ok_or_else(|| format!("--window: \"{v}\" is not <width>x<height>"))?);
++            }
++            "--screenshot" => o.screenshot = args.next(),
++            "--test-steps" => o.test_steps = read_steps(&args.next().unwrap_or_default())?,
++            "--screenshot-frames" => {
++                let v = args.next().unwrap_or_default();
++                o.screenshot_frames = v.parse().map_err(|_| format!("--screenshot-frames: \"{v}\" is not a number"))?;
++            }
++            "--" => {
++                for name in args.by_ref() {
++                    o.files.push(resolve(&name)?);
++                }
++            }
++            s if s.starts_with("--") => return Err(format!("unknown option \"{s}\"; see --help")),
++            name => o.files.push(resolve(name)?),
++        }
++    }
++    Ok(Some(o))
++}
++
++fn resolve(name: &str) -> Result<String, String> {
++    startup::absolute(name).map(|p| p.to_string_lossy().into_owned()).map_err(|e| format!("{name}: {e}"))
++}
++
++/// Stops with `message`: on the console and, for a Workbench start, in a requester.
++fn fail(message: &str) -> std::process::ExitCode {
++    log::error!("{message}");
++    startup::show_error("VectorCraft", message);
++    std::process::ExitCode::from(20)
++}
++
++// The main task's stack: a Shell start gives the program the Shell's (40,960 bytes on AROS One),
++// which the window loop overruns; the start-up code runs the program on 16 MiB instead.
++aros_startup::minimum_stack!(16 << 20);
++
++fn main() -> std::process::ExitCode {
++    // Unix-style probes (fonts, /etc/localtime) must not open "insert volume" requesters.
++    startup::quiet_dos();
++    // ABIv11's C library keeps one saved directory for the whole process and restores it on the
++    // main task at exit; whichever task changes directory first decides what is saved. This
++    // chdir, before any worker can make one, keeps the main task's own (Workbench start) lock.
++    if let Err(e) = std::env::set_current_dir(".") {
++        return fail(&format!("cannot keep the start directory: {e}"));
++    }
++    let start = match startup::startup(&[launch::KEY]) {
++        Ok(s) => s,
++        Err(e) => return fail(&e),
++    };
++    SHELL.store(!start.workbench, std::sync::atomic::Ordering::Relaxed);
++    let logger = install_logger(!start.workbench);
++    // Where VectorCraft.portable is looked for, for a standard library without current_exe.
++    match startup::program_dir() {
++        Ok(dir) => startup::set_default_env("VECTORCRAFT_PROGRAM", &dir.join("VectorCraft")),
++        Err(e) => log::warn!("cannot find the program's drawer: {e}"),
++    }
++    let mut args: Vec<String> = if start.workbench { Vec::new() } else { std::env::args().skip(1).collect() };
++    let env = std::env::var("GUI_RENDERER").ok();
++    let choice = match launch::choose(&mut args, &start.tooltypes, env.as_deref(), egui_aros::RendererRequest::Auto) {
++        Ok(c) => c,
++        Err(e) => return fail(&e),
++    };
++    let mut options = match parse_args(args) {
++        Ok(Some(o)) => o,
++        Ok(None) => return std::process::ExitCode::SUCCESS,
++        Err(e) => return fail(&e),
++    };
++    options.files.extend(start.files);
++    prefs_dir::install_fonts();
++    if let Some(logger) = logger {
++        match prefs::log_dir().filter(|_| prefs::prefs_enabled()) {
++            Some(dir) => match logger.attach_dir(&dir) {
++                Ok(path) => log::info!("log file {}", path.display()),
++                Err(e) => log::warn!("no log file: {e}"),
++            },
++            None => logger.no_file(),
++        }
++    }
++    log::info!("VectorCraft {RELEASE} for AROS ({TARGET}); start from {}", if start.workbench { "Workbench" } else { "Shell" });
++    match prefs::prefs_path() {
++        Some(path) => log::info!("settings: {}", path.display()),
++        None => log::warn!("no settings folder (VectorCraft.portable is missing beside the program, or the drawer cannot be written): nothing is kept"),
++    }
++    log::info!("GUI_RENDERER requested {} (from {})", launch::request_name(choice.request), choice.source.name());
++    let code = run(options, choice);
++    // AROS's pthread library joins every thread, detached ones included, in its exit handler; the
++    // idle workers of rayon's global pool never end by themselves. Nothing uses it after this.
++    #[cfg(target_os = "aros")]
++    rayon_core::terminate_global_thread_pool();
++    log::info!("shutdown: exit({code})");
++    std::process::ExitCode::from(code)
++}
++
++type SharedWindow = Rc<RefCell<Option<egui_aros::WindowHandle>>>;
++/// Answers for the next file requesters, from `--test-steps` (`pick`).
++type Answers = Rc<RefCell<VecDeque<String>>>;
++
++/// The app as the desktop app sets it up (apps/vectorcraft/src/main.rs), with AROS services.
++fn new_app(window: SharedWindow, answers: Answers, files: Vec<String>) -> VectorcraftApp {
++    let saved = prefs::read_prefs();
++    let mut session = Session::new();
++    prefs_dir::attach_profile_store(&mut session);
++    prefs_dir::attach_color_settings(&mut session);
++    prefs_dir::attach_plugin_store(&mut session);
++    prefs_dir::attach_scripts_dir(&mut session);
++    let mut app = VectorcraftApp::new(session, services(window, answers));
++    prefs::load_prefs(&mut app, saved);
++    prefs_dir::attach_pdf_preset_store(&mut app.session);
++    prefs_dir::attach_custom_dictionary(&mut app.session);
++    // The user's own libraries live next to the settings, as on the desktop.
++    let beside = |dir: &str| prefs::prefs_path().and_then(|p| Some(p.parent()?.join(dir).to_string_lossy().to_string()));
++    app.session.swatch_libraries.set_user_dir(beside("Swatches"));
++    app.session.style_libraries.set_user_dir(beside("Graphic Styles"));
++    app.session.symbol_libraries.set_user_dir(beside("Symbols"));
++    app.session.brush_libraries.set_user_dir(beside("Brushes"));
++    vectorcraft_ui_egui::panels::library_panel::restore(&mut app);
++    if prefs::prefs_enabled() {
++        app.session.libraries.set_dir(beside("Libraries"));
++        app.session.recovery.set_default_folder(beside("Data Recovery"));
++    }
++    for f in files {
++        if let Err(e) = vectorcraft_ui_egui::io::open_reporting(&mut app, &f) {
++            log::warn!("{f}: {e}");
++        }
++    }
++    app
++}
++
++/// The app as egui-aros runs it, and the screenshot and test-step hooks.
++struct Host {
++    app: VectorcraftApp,
++    /// ui-egui's input hook takes the context; egui-aros's does not pass it.
++    ctx: egui::Context,
++    window: SharedWindow,
++    answers: Answers,
++    screenshot: Option<(String, u64)>,
++    done: bool,
++    renderer_logged: bool,
++    steps: VecDeque<Step>,
++    /// Frames shown while no file was being opened, saved or exported in the background: the
++    /// count `--test-steps` and `--screenshot` go by, so a step does not run before the
++    /// document it works on has opened.
++    settled: u64,
++    step_shot: Option<String>,
++    /// Per frame: (whole frame, raster + present), for the summary in the log at shutdown.
++    frame_costs: Vec<(Duration, Duration)>,
++}
++
++/// One log line: frames, and the median, mean and longest frame and raster+present times.
++fn frame_summary(costs: &[(Duration, Duration)]) -> String {
++    if costs.is_empty() {
++        return "no frames".to_owned();
++    }
++    let ms = |d: Duration| d.as_secs_f64() * 1000.0;
++    let stats = |mut v: Vec<f64>| {
++        v.sort_by(f64::total_cmp);
++        let mean = v.iter().sum::<f64>() / v.len() as f64;
++        format!("median {:.0} ms, mean {:.0} ms, max {:.0} ms", v[v.len() / 2], mean, v[v.len() - 1])
++    };
++    format!(
++        "{} frames; frame {}; raster+present {}",
++        costs.len(),
++        stats(costs.iter().map(|c| ms(c.0)).collect()),
++        stats(costs.iter().map(|c| ms(c.1)).collect())
++    )
++}
++
++impl egui_aros::App for Host {
++    fn started(&mut self, window: egui_aros::WindowHandle) {
++        *self.window.borrow_mut() = Some(window);
++    }
++
++    // --screenshot needs the frame's pixels; with OpenGL they are read back only then.
++    fn wants_pixels(&self) -> bool {
++        self.screenshot.is_some() || self.step_shot.is_some()
++    }
++
++    fn raw_input_hook(&mut self, raw: &mut egui::RawInput) {
++        self.app.raw_input_hook(&self.ctx, raw);
++    }
++
++    fn logic(&mut self, ctx: &egui::Context) {
++        // --screenshot counts frames, and with no idle poll an untouched window draws none after
++        // it settles: keep drawing until the picture is taken.
++        if self.screenshot.is_some() && !self.done {
++            ctx.request_repaint();
++        }
++        self.app.tick(ctx);
++        self.app.finish_ime_logic(ctx);
++        if self.app.ui.status == "quit" {
++            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
++        }
++        while self.steps.front().is_some_and(|s| s.frame <= self.settled) {
++            let Some(step) = self.steps.pop_front() else { break };
++            if let Some(paths) = step.pick {
++                log::info!("test step {}: the next file requesters answer {paths:?}", step.frame);
++                self.answers.borrow_mut().extend(paths);
++            }
++            if let Some(path) = step.open {
++                log::info!("test step {}: open {path}: {:?}", step.frame, vectorcraft_ui_egui::io::open_reporting(&mut self.app, &path));
++            }
++            if let Some(id) = step.run {
++                log::info!("test step {}: {id} {}: {:?}", step.frame, step.params, self.app.run(&id, step.params.clone()));
++            }
++            if step.screenshot.is_some() {
++                self.step_shot = step.screenshot;
++            }
++            if step.quit {
++                log::info!("test step {}: quit", step.frame);
++                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
++            }
++            ctx.request_repaint();
++        }
++        if !self.steps.is_empty() {
++            ctx.request_repaint();
++        }
++    }
++
++    fn ui(&mut self, ui: &mut egui::Ui) {
++        self.app.ui(ui);
++        if self.app.take_prefs_changed() {
++            prefs::save_prefs(&self.app);
++        } else {
++            prefs::save_prefs_soon(&self.app);
++        }
++    }
++
++    fn quit_requested(&self) -> bool {
++        self.done
++    }
++
++    fn frame_done(&mut self, report: &egui_aros::FrameReport, renderer: &egui_aros::raster::Renderer) {
++        if !vectorcraft_ui_egui::opening::long_operation_busy(&self.app) {
++            self.settled += 1;
++        }
++        let drawn = report.raster + report.present;
++        self.frame_costs.push((report.logic + report.ui + report.tessellate + report.textures + drawn, drawn));
++        // RUST_LOG=debug: one line per frame, to see what woke the loop and what the frame cost.
++        log::debug!(
++            "frame {} {}x{}: slept {:?} (timeout {:?}, by timeout {}), late {:?}, events {}, logic {:?} ui {:?} tessellate {:?} raster {:?} present {:?}, next repaint {:?}",
++            report.frame, report.width, report.height, report.waited, report.wait_timeout, report.woke_by_timeout, report.repaint_late,
++            report.events, report.logic, report.ui, report.tessellate, report.raster, report.present, report.next_repaint
++        );
++        if let Some(path) = self.step_shot.take() {
++            match write_png(&path, renderer) {
++                Ok(()) => log::info!("test step: wrote {path}"),
++                Err(e) => log::error!("test step: screenshot {path}: {e}"),
++            }
++        }
++        if !self.renderer_logged {
++            self.renderer_logged = true;
++            log::info!("GUI_RENDERER using {}", egui_aros::renderer_name());
++            log_tasks("first frame");
++        }
++        if let Some((path, frames)) = &self.screenshot
++            && self.settled >= *frames
++        {
++            match write_png(path, renderer) {
++                Ok(()) => log::info!("wrote {path}"),
++                Err(e) => log::error!("screenshot {path}: {e}"),
++            }
++            self.done = true;
++        }
++    }
++}
++
++fn run(mut options: Options, choice: launch::RendererChoice) -> u8 {
++    let (request, narrowed) = launch::effective(choice);
++    if let Some(why) = narrowed {
++        log::info!("GUI_RENDERER AUTO uses the CPU: {why}");
++    }
++    // As large as the screen allows, up to 1280x860; --window sets it exactly.
++    let (sw, sh) = egui_aros::screen_size().map_or((1296, 908), |(w, h)| (w as i32, h as i32));
++    let (w, h) = options.window.unwrap_or((1280.min(sw - 16).max(800), 860.min(sh - 48).max(500)));
++    let (w, h) = (w.max(1) as u32, h.max(1) as u32);
++    let ctx = egui::Context::default();
++    VectorcraftApp::install_ime_reset_hooks(&ctx);
++    let window: SharedWindow = Rc::new(RefCell::new(None));
++    let answers: Answers = Rc::new(RefCell::new(VecDeque::new()));
++    let app = new_app(window.clone(), answers.clone(), std::mem::take(&mut options.files));
++    log_tasks("app created");
++    let mut host = Host {
++        app,
++        ctx: ctx.clone(),
++        window,
++        answers,
++        screenshot: options.screenshot.clone().map(|p| (p, options.screenshot_frames)),
++        done: false,
++        renderer_logged: false,
++        steps: options.test_steps.drain(..).collect(),
++        settled: 0,
++        step_shot: None,
++        frame_costs: Vec::new(),
++    };
++    let run_options = egui_aros::Options {
++        title: "VectorCraft".to_owned(),
++        inner_size: (w, h),
++        min_inner_size: Some((640, 400)),
++        // No idle poll: as eframe on the desktop, the loop sleeps until input, a repaint the app
++        // asks for, or a wake-up from another thread. A poll is a full frame.
++        idle_poll: None,
++        renderer: request,
++        ..Default::default()
++    };
++    // A panic below the app (renderer, window) unwinds to here on ABIv11, so the shutdown below
++    // still runs.
++    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| egui_aros::run(run_options, ctx, &mut host)))
++        .unwrap_or_else(|_| Err(egui_aros::Error::Window("the window loop stopped after a panic".into())));
++    if let Some(info) = egui_aros::renderer_info() {
++        log::info!("GUI_RENDERER {}", info.summary());
++    }
++    log::info!("frames: {}", frame_summary(&host.frame_costs));
++    let code = match result {
++        Ok(()) => 0,
++        Err(e) => {
++            log::error!("{e}");
++            if !SHELL.load(std::sync::atomic::Ordering::Relaxed) {
++                startup::show_error("VectorCraft", &e.to_string());
++            }
++            20
++        }
++    };
++    // As the desktop app does at exit: the settings, then the saves and exports still running
++    // in the background; then the app (and with it its workers' channels) goes before main
++    // returns, because AROS's pthread library waits for every thread when the process exits.
++    if host.screenshot.is_none() {
++        prefs::save_prefs(&host.app);
++    }
++    vectorcraft_ui_egui::background::wait_all(&mut host.app);
++    drop(host);
++    log::info!("shutdown: application state dropped");
++    // Name the tasks still there, so a worker that does not end can be found in the log.
++    log_tasks("shutdown");
++    code
++}
++
++/// Logs the program's threads still present (`pthread thread #N` on AROS), at shutdown and, with
++/// VECTORCRAFT_LOG_TASKS set, at start-up points too.
++fn log_tasks(when: &str) {
++    if when != "shutdown" && std::env::var_os("VECTORCRAFT_LOG_TASKS").is_none() {
++        return;
++    }
++    let threads: Vec<String> = startup::task_names().into_iter().filter(|t| t.starts_with("pthread")).collect();
++    log::info!("{when}: threads: {}", if threads.is_empty() { "none".to_owned() } else { threads.join(", ").replace('\t', ":") });
++}
++
++fn write_png(path: &str, r: &egui_aros::raster::Renderer) -> Result<(), String> {
++    let img = image::RgbaImage::from_raw(r.width as u32, r.height as u32, r.frame.clone()).ok_or("the frame has the wrong size")?;
++    img.save_with_format(path, image::ImageFormat::Png).map_err(|e| e.to_string())
++}
++
++// ---------------------------------------------------------------------------------------------
++// Services: ASL requesters, files, clipboard text, OpenURL.
++
++/// An AmigaDOS pattern for a pick's file types: `#?.(svg|pdf)`; every file when it has none.
++fn pattern(pick: &FilePick) -> String {
++    let mut exts: Vec<&str> = pick.filters.iter().flat_map(|(_, e)| e.iter().map(String::as_str)).collect();
++    exts.dedup();
++    let pattern = if exts.is_empty() || exts.contains(&"*") { "#?".into() } else { format!("#?.({})", exts.join("|")) };
++    // asl.library copies the pattern into a 257-byte string gadget, and Intuition's string class
++    // copied initial text without a length check before mainline's fix: a longer pattern
++    // (VectorCraft's Open list is about 300 characters) overwrote memory. Show every file instead.
++    if pattern.len() > 255 { "#?".into() } else { pattern }
++}
++
++/// The requester's starting drawer as a DOS name.
++fn start_drawer(folder: Option<&str>) -> String {
++    folder.and_then(|f| startup::nix_to_dos(f).ok()).unwrap_or_default()
++}
++
++fn pick(window: &SharedWindow, answers: &Answers, select: egui_aros::asl::Select, title: &str, folder: Option<&str>, name: &str, pat: &str) -> Vec<String> {
++    if let Some(answer) = answers.borrow_mut().pop_front() {
++        log::info!("test step: {title} requester answered {answer}");
++        return vec![answer];
++    }
++    let Some(w) = window.borrow().clone() else { return Vec::new() };
++    egui_aros::asl::request(&w, select, title, &start_drawer(folder), name, pat)
++        .into_iter()
++        .filter_map(|dos| startup::dos_to_nix(&dos).map_err(|e| log::warn!("requester: {dos}: {e}")).ok())
++        .collect()
++}
++
++fn write_file(path: &str, bytes: &[u8]) -> Result<(), String> {
++    fileio::write_atomic(std::path::Path::new(path), bytes).map_err(|e| e.to_string())
++}
++
++/// Read a whole file. A device or pipe may never end: only a regular file is read.
++fn read_file(path: &str) -> Result<Vec<u8>, String> {
++    if !std::fs::metadata(path).map_err(|e| e.to_string())?.is_file() {
++        return Err(format!("{path}: not a file"));
++    }
++    std::fs::read(path).map_err(|e| e.to_string())
++}
++
++fn services(window: SharedWindow, answers: Answers) -> Services {
++    use egui_aros::asl::Select;
++    let (w1, w2, w3, w4) = (window.clone(), window.clone(), window.clone(), window);
++    let (a1, a2, a3, a4) = (answers.clone(), answers.clone(), answers.clone(), answers);
++    Services {
++        pick_open: Some(Box::new(move |p: &FilePick| pick(&w1, &a1, Select::Open, "Open", p.folder.as_deref(), "", &pattern(p)).into_iter().next())),
++        pick_open_multi: Some(Box::new(move || pick(&w2, &a2, Select::OpenMany, "Place", None, "", "#?"))),
++        pick_save: Some(Box::new(move |p: &FilePick| {
++            if let Some(folder) = &p.folder {
++                // A save requester's drawer (the Templates folder) may not exist yet.
++                let _ = std::fs::create_dir_all(folder);
++            }
++            pick(&w3, &a3, Select::Save, "Save", p.folder.as_deref(), &p.name, &pattern(p)).into_iter().next()
++        })),
++        pick_folder: Some(Box::new(move || pick(&w4, &a4, Select::Drawer, "Choose drawer", None, "", "#?").into_iter().next())),
++        read: Some(Box::new(read_file)),
++        write: Some(Box::new(write_file)),
++        exists: Some(Box::new(|p: &str| std::path::Path::new(p).exists())),
++        write_shared: Some(std::sync::Arc::new(write_file)),
++        stream_shared: Some(std::sync::Arc::new(|p: &str, fill: &mut dyn FnMut(&mut dyn std::io::Write) -> std::io::Result<()>| {
++            fileio::write_file_with(p, fill).map_err(|e| e.to_string())
++        })),
++        clipboard_read: Some(Box::new(egui_aros::clipboard_text)),
++        open_url: Some(Box::new(|url: &str| {
++            if !egui_aros::open_url(url) {
++                log::warn!("could not open {url}");
++            }
++        })),
++        ..Default::default()
++    }
++}

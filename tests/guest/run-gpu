@@ -1,0 +1,20 @@
+.KEY RUNDIR/A
+.BRA [
+.KET ]
+; VectorCraft with OpenGL forced: a screenshot start and the scripted session.
+; Unpack the payload to RAM:vc, then: Execute RAM:vc/run-gpu <results directory>
+FailAt 21
+Protect RAM:vc/vectorcraft-cli +e
+Protect RAM:vc/VectorCraft +e
+SetEnv RUST_LOG info
+RAM:vc/VectorCraft --gui-renderer GPU --window 900x600 --screenshot RAM:vc/gpu-shot.png --screenshot-frames 6 RAM:vc/shapes.svg
+Echo $RC >[RUNDIR]/gpu-shot.rc
+RAM:vc/VectorCraft --gui-renderer GPU --window 900x600 --test-steps RAM:vc/steps-gpu.json RAM:vc/shapes.svg
+Echo $RC >[RUNDIR]/gpu-steps.rc
+RAM:vc/vectorcraft-cli info RAM:vc/gpu-saved.vectorcraft >[RUNDIR]/gpu-saved-info.txt
+Echo $RC >[RUNDIR]/gpu-saved-info.rc
+Copy RAM:vc/gpu-shot.png [RUNDIR]/gpu-shot.png
+Copy RAM:vc/gpu-steps-b.png [RUNDIR]/gpu-steps-b.png
+Copy RAM:vc/gpu-saved.vectorcraft [RUNDIR]/gpu-saved.vectorcraft
+Copy RAM:vc/VectorCraftData/logs/#? [RUNDIR]/
+Echo "done" >[RUNDIR]/done.txt

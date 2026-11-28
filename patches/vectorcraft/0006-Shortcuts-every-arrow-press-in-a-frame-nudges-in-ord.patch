@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
-Date: Thu, 29 Oct 2026 09:18:46 +0100
+Date: Sat, 28 Nov 2026 08:47:00 +0100
 Subject: [PATCH] Shortcuts: every arrow press in a frame nudges, in order
 
 egui's consume_key removes every press of the key, so several presses that
@@ -14,13 +14,13 @@ they were pressed.
  2 files changed, 42 insertions(+), 4 deletions(-)
 
 diff --git a/crates/ui-egui/src/shortcuts.rs b/crates/ui-egui/src/shortcuts.rs
-index 251617931106e28f33b87a339285d1066a2d7041..83d43f08333255d677d70f657b3e05a84b1d7fb4 100644
+index df87187a656c1c53317129e7d2e7fb42b9c5fed6..f13bceba4d3e67f6912114350c4ad4636445d0a0 100644
 --- a/crates/ui-egui/src/shortcuts.rs
 +++ b/crates/ui-egui/src/shortcuts.rs
-@@ -544,11 +544,27 @@ pub fn handle(app: &mut VectorcraftApp, ctx: &egui::Context) {
-             }
-         }
-     }
+@@ -622,11 +622,27 @@ fn type_tool_input(app: &mut VectorcraftApp, ctx: &egui::Context, composing: boo
+ /// Apply arrow-key movement and clear selected art when no text editor owns input, unless a Layers
+ /// or Appearance row has Delete/Backspace (`rows_keys`).
+ fn nudge_and_clear(app: &mut VectorcraftApp, ctx: &egui::Context, rows_keys: bool) {
 -    // Arrow nudges (Shift = ×10, Alt = copy).
 +    // Arrow nudges (Shift = ×10, Alt = copy), one per press and in the order pressed: a host that
 +    // draws slowly delivers several presses to one frame, and `consume_key` takes them all.
@@ -50,12 +50,12 @@ index 251617931106e28f33b87a339285d1066a2d7041..83d43f08333255d677d70f657b3e05a8
          }
      }
 diff --git a/crates/ui-egui/src/shortcuts/tests.rs b/crates/ui-egui/src/shortcuts/tests.rs
-index f679b16382be9b84c10f8427653aaaa269d16c9a..5cb10f259acddab56104e5bb0cd9e607ac267355 100644
+index 44d438b73b9f5151c9d47a3b78409dbf1bf089df..2faa46412f0d3992d726fee8573bfb369498e410 100644
 --- a/crates/ui-egui/src/shortcuts/tests.rs
 +++ b/crates/ui-egui/src/shortcuts/tests.rs
-@@ -1222,3 +1222,25 @@ fn all_registered_shortcuts_parse() {
-         }
-     }
+@@ -2755,3 +2755,25 @@ fn artboard_navigation_commands_can_be_given_keys() {
+     frame(&mut app, press(Key::PageUp));
+     assert_eq!(at(&app), 1, "Page Up goes to the previous artboard");
  }
 +
 +/// Every arrow press in one frame nudges: a host that draws slowly (a software renderer, an

@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 09:24:42 +0100
+Subject: [PATCH] AROS: release builds optimised for size, the renderers at
+ opt-level 3
+
+An AROS program is a relocatable ELF file that carries its relocations, and
+the AROS package manager takes files up to 128 MiB. With whole-program LTO at
+opt-level 3 the VectorCraft program is about 170 MB after stripping. The
+release profile optimises for size; the document and interface renderers and
+the geometry and SIMD crates they run on keep opt-level 3.
+---
+ Cargo.toml | 29 +++++++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/Cargo.toml b/Cargo.toml
+index b733a0f3b95ad32dd9a55f25f6d3b025d863b394..4e2011d8a7bdafc0f38d7b07f25e46e6ca05d40d 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -161,6 +161,35 @@ debug = "line-tables-only"
+ [profile.release]
+ lto = "thin"
+ codegen-units = 1
++# AROS: optimised for size. An AROS program is a relocatable ELF file that carries its relocations
++# (about half the size of its code again), and the AROS package manager takes files up to 128 MiB:
++# at opt-level 3 VectorCraft is about 170 MB. The renderers and the geometry they run on stay at
++# opt-level 3.
++opt-level = "s"
++
++[profile.release.package.vello_cpu]
++opt-level = 3
++
++[profile.release.package.vello_common]
++opt-level = 3
++
++[profile.release.package.fearless_simd]
++opt-level = 3
++
++[profile.release.package.kurbo]
++opt-level = 3
++
++[profile.release.package.epaint]
++opt-level = 3
++
++[profile.release.package.tiny-skia]
++opt-level = 3
++
++[profile.release.package.egui-aros]
++opt-level = 3
++
++[profile.release.package.vectorcraft-render]
++opt-level = 3
+ 
+ [patch.crates-io]
+ hayro-syntax = { git = "https://github.com/storytold/craft-libs", rev = "9be9a63782298ab59cd9b7a42ee9cba4f42a5ccb" }

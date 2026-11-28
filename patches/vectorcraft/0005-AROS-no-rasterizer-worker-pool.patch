@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: tomaszstaniak <68373859+tomaszstaniak@users.noreply.github.com>
+Date: Sat, 28 Nov 2026 08:46:32 +0100
+Subject: [PATCH] AROS: no rasterizer worker pool
+
+AROS's pthread library waits for every thread when the program exits, and the
+systems run exec on one CPU; documents are rendered on the calling thread, as
+on the web.
+---
+ crates/render/src/threads.rs | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/crates/render/src/threads.rs b/crates/render/src/threads.rs
+index 1070c29c6a46d361da687be23ef2d6aca6791019..7ce92a06f5b295ae2feb5aec62ff6e19d0be0bfc 100644
+--- a/crates/render/src/threads.rs
++++ b/crates/render/src/threads.rs
+@@ -29,11 +29,13 @@ pub fn set_usable_cores(n: Option<usize>) {
+ /// (9 are slower again); the pixels don't depend on the count
+ /// (`pixels_do_not_depend_on_the_thread_count`).
+ pub fn default_threads() -> u16 {
+-    #[cfg(target_arch = "wasm32")]
++    // AROS: no rasterizer pool either. Its threads would outlive the window (AROS's pthread
++    // library waits for every thread when the program exits), and the systems run exec on one CPU.
++    #[cfg(any(target_arch = "wasm32", target_os = "aros"))]
+     {
+         0
+     }
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(any(target_arch = "wasm32", target_os = "aros")))]
+     {
+         let o = THREADS_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+         if o >= 0 {
